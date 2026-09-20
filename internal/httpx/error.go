@@ -7,9 +7,10 @@
 // classification, the handler either inspects the layers below it — coupling it
 // to their internals — or returns 500 for everything.
 //
-// What this package deliberately does not define is the JSON response body.
-// That is part of the API contract and is decided by the data model and API
-// surface specification, not here.
+// The JSON response body is defined by the data model and API surface
+// specification rather than here — this package supplies the three pieces of it
+// that are properties of the error itself: the code (Kind), the client-safe
+// message, and, for a validation failure, the per-field reason codes.
 package httpx
 
 import (
@@ -79,6 +80,18 @@ func (k Kind) Status() int {
 	}
 }
 
+// Reason codes for a validation failure. The set is closed: a client can
+// branch on these and a UI can localize them, neither of which works against a
+// sentence. Human detail belongs in the message.
+const (
+	CodeRequired      = "required"
+	CodeTooLong       = "too_long"
+	CodeTooShort      = "too_short"
+	CodeInvalidFormat = "invalid_format"
+	CodeInvalidValue  = "invalid_value"
+	CodeInvalidType   = "invalid_type"
+)
+
 // Error is a classified error.
 //
 // Message is written for the caller of the API and must not contain anything
@@ -88,6 +101,15 @@ type Error struct {
 	Kind    Kind
 	Message string
 	Err     error
+
+	// Fields is set only on a validation error, mapping a request field name
+	// to one of the reason codes above. It is nil on every other error.
+	//
+	// It lives here rather than in a validation type local to the API package
+	// because this package already owns two thirds of the error envelope — the
+	// code comes from Kind and the message from Message — and two error types
+	// doing one job is worse than one package knowing slightly more.
+	Fields map[string]string
 }
 
 func (e *Error) Error() string {
@@ -143,6 +165,27 @@ func Unavailable(format string, args ...any) *Error {
 // UnavailableErr reports a failing dependency caused by err.
 func UnavailableErr(err error, format string, args ...any) *Error {
 	return newf(KindUnavailable, err, format, args...)
+}
+
+// InvalidFields reports a validation failure, naming every offending field.
+//
+// All of a request's problems are reported in one response rather than one per
+// request, so a client filling in a form is not made to discover them one round
+// trip at a time.
+func InvalidFields(fields map[string]string, format string, args ...any) *Error {
+	e := newf(KindInvalid, nil, format, args...)
+	e.Fields = fields
+	return e
+}
+
+// FieldsOf returns the per-field reason codes carried by err, or nil if it is
+// not a validation error.
+func FieldsOf(err error) map[string]string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Fields
+	}
+	return nil
 }
 
 // Internal reports a server-side fault caused by err.

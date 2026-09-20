@@ -164,3 +164,35 @@ func TestFormattingArguments(t *testing.T) {
 		t.Errorf("Message = %q", got)
 	}
 }
+
+func TestInvalidFields(t *testing.T) {
+	err := InvalidFields(map[string]string{
+		"title":   CodeRequired,
+		"service": CodeInvalidFormat,
+	}, "request validation failed")
+
+	if got := KindOf(err); got != KindInvalid {
+		t.Fatalf("kind = %s, want invalid", got)
+	}
+	if got := StatusFor(err); got != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", got)
+	}
+
+	fields := FieldsOf(fmt.Errorf("wrapped: %w", err))
+	if len(fields) != 2 || fields["title"] != CodeRequired || fields["service"] != CodeInvalidFormat {
+		t.Fatalf("fields = %v, want both reason codes to survive wrapping", fields)
+	}
+}
+
+func TestFieldsOfIsNilForEveryOtherError(t *testing.T) {
+	for _, err := range []error{
+		errors.New("plain"),
+		Invalid("title is required"),
+		NotFound("incident not found"),
+		Internal(errors.New("boom"), "internal server error"),
+	} {
+		if got := FieldsOf(err); got != nil {
+			t.Errorf("FieldsOf(%v) = %v, want nil", err, got)
+		}
+	}
+}
