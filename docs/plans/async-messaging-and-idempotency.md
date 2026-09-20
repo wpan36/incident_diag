@@ -123,21 +123,57 @@ Decoding tolerates unknown fields so a later version can add one. A message with
 
 ### Producing
 
-franz-go with the idempotent producer enabled and `acks=all`. A produce that the broker
-did not acknowledge is a failure the caller sees.
+franz-go with `acks=all` and **the idempotent producer disabled**. A produce that the
+broker did not acknowledge is a failure the caller sees, bounded by
+`KAFKA_PRODUCE_TIMEOUT` but not equal to it — see below.
+
+Disabling idempotency is the opposite of the usual advice, and it was measured rather than
+reasoned about. franz-go will not fail a record it has already sent while producing
+idempotently — it cannot know whether the broker processed the request, and dropping the
+record would corrupt the sequence numbers of everything behind it — so neither the context
+deadline nor `RecordDeliveryTimeout` applies. With the broker stopped mid-request, the
+upload handler blocked for as long as the broker was down: 223 seconds in the M6 smoke
+test, while the client had been cut off by `HTTP_WRITE_TIMEOUT` after 30. An unbounded
+handler on the request path is a worse failure than the one idempotency prevents.
+
+And it prevents a failure this system does not have. A retried produce can write the same
+record twice; a duplicate message costs exactly one refused claim, because the claim is a
+conditional UPDATE. Delivery is at-least-once by design (ADR 0003), so paying for
+exactly-once *delivery* with an unbounded handler buys nothing. With idempotency off, the
+same measurement gives 201 in ten seconds with the produce failure logged, which is what
+the rest of this section describes.
 
 `POST /api/documents` writes the row, then produces with a timeout, then responds **201
 regardless of whether the produce succeeded**, logging a produce failure at error level.
 
 This looks wrong and is deliberate. The document genuinely was created, so 500 would be a
 lie, and a client that retried on 500 would upload a second copy. The row is `PENDING`, the
-reconciler will enqueue it within a minute, and the only cost of the failed produce is that
-delay. Being able to answer honestly here is the first payoff of having a reconciler.
+reconciler will enqueue it on its next sweep, and the only cost of the failed produce is
+that delay — at the defaults, `RECONCILE_PENDING_AFTER` plus up to one `RECONCILE_INTERVAL`,
+so between one minute and ninety seconds. Being able to answer honestly here is the first
+payoff of having a reconciler.
 
 `KAFKA_PRODUCE_TIMEOUT` is spent **inside the HTTP request**: with the broker down, an
-upload blocks for it before answering 201. It therefore has to stay comfortably below
-`HTTP_WRITE_TIMEOUT` (30s by default), and the two are worth reading together before either
-is changed.
+upload blocks before answering 201.
+
+**It is not an upper bound on that block, and the difference is large enough to matter.**
+The producer applies it twice — as `RecordDeliveryTimeout` on the client and as a context
+deadline around the produce call — yet with the broker stopped, uploads configured at 10s
+took 13.5s, 16.0s and 16.7s in three consecutive measurements. The overshoot is franz-go's
+own dial backoff and metadata refresh, which happen around the produce rather than inside
+it, and it is not constant: budget for **roughly 1.7x** the configured value and treat the
+variance as real.
+
+The guidance is therefore **keep `KAFKA_PRODUCE_TIMEOUT` at or below half of
+`HTTP_WRITE_TIMEOUT`**, not merely below it. The defaults (10s and 30s) satisfy this. The
+failure mode otherwise is precisely the one disabling the idempotent producer was meant to
+remove: at 25s against a 30s write timeout the arithmetic looks safe, the real spend is
+around 40s, and the client is cut off before the 201 it should have received.
+
+This was found by measuring after M6 was implemented. The paragraph above it records a
+measurement of the idempotent producer's *magnitude* — 223 seconds versus ten — and the
+ten was taken as the configured value rather than checked. Measuring one number does not
+license assuming the next one.
 
 ### Consuming
 
@@ -300,7 +336,7 @@ topics, the compose service and the reconciler's policy; the real ingestion hand
 | Variable | Default | |
 | --- | --- | --- |
 | `KAFKA_BROKERS` | — | required, comma separated |
-| `KAFKA_PRODUCE_TIMEOUT` | `10s` | |
+| `KAFKA_PRODUCE_TIMEOUT` | `10s` | real spend is ~1.7x this; keep at or below half of `HTTP_WRITE_TIMEOUT` |
 | `INGEST_LEASE` | `10m` | |
 | `INGEST_MAX_ATTEMPTS` | `3` | |
 | `RECONCILE_INTERVAL` | `30s` | |
@@ -358,6 +394,10 @@ message that can never succeed blocks its partition forever.
 
 **Kafka exactly-once semantics.** Already rejected in ADR 0003 — the side effects that need
 protecting are in MySQL and Elasticsearch, which Kafka transactions do not cover.
+
+**The idempotent producer.** Rejected during M6, on measurement: it makes a produce
+unbounded once a request has been sent, which puts an unbounded wait on the HTTP upload
+path, and the duplicate records it prevents are already harmless here. See Producing.
 
 **One partition per topic.** Simplest and globally ordered, but consumer group assignment,
 rebalancing and parallel processing all become untestable, and those are among the things
@@ -434,8 +474,9 @@ cleanly wiped broker.
     is left alone
   - `EnsureTopics` twice in a row succeeds and leaves three partitions
 - Manual smoke: upload a document with Kafka stopped, observe the 201 and the logged
-  produce failure, start Kafka, and watch the reconciler enqueue it within a minute — then
-  watch the placeholder handler fail it and the retry schedule play out.
+  produce failure, start Kafka, and watch the reconciler enqueue it on the sweep after
+  `RECONCILE_PENDING_AFTER` — then watch the placeholder handler fail it and the retry
+  schedule play out.
 
 ## Known limitations, accepted
 

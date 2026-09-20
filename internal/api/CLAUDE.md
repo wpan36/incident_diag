@@ -10,8 +10,8 @@ instead of something each handler must remember.
 
 ## Contents
 
-- `server.go` — `Server`, `NewServer`, `Router` (gin routes and middleware order),
-  `/healthz` and `/readyz`.
+- `server.go` — `Server`, `NewServer` (store, file storage, `mq.Producer`, logger),
+  `Router` (gin routes and middleware order), `/healthz` and `/readyz`.
 - `middleware.go` — `requestID` (honours a validated inbound `X-Request-ID`, otherwise
   mints a ULID), `requestLogger`, and `recovery`.
 - `errors.go` — the `errorBody` envelope, `renderError`, `renderCreated`, the `errTooLarge`
@@ -23,14 +23,14 @@ instead of something each handler must remember.
 - `responses.go` — the wire shapes `Incident` and `Document` and their converters.
 - `incidents.go` — create, list and get, plus `decodeJSON` and `maxJSONBodyBytes`.
 - `documents.go` — the streaming multipart upload, the accepted extensions and document
-  types, plus list and get.
+  types, `enqueueIngestion`, plus list and get.
 - `api_test.go`, `documents_test.go` — unit tests against the router with fakes.
 - `integration_test.go` — `//go:build integration`. Real MySQL and a real directory.
 
 ## How it fits in
 
-The top of the `internal/` graph: it depends on `store`, `files`, `httpx`, `id` and `log`,
-and nothing depends on it except `cmd/api`. It is where `httpx` kinds become status codes
+The top of the `internal/` graph: it depends on `store`, `files`, `mq`, `httpx`, `id` and
+`log`, and nothing depends on it except `cmd/api`. It is where `httpx` kinds become status codes
 and where stored types become wire types.
 
 ## Gotchas
@@ -81,6 +81,16 @@ and where stored types become wire types.
   property of the file rather than a claim the client should make — the ingestion parser has
   to trust it. `document_type` is required rather than defaulted, because a default produces
   a corpus of mislabelled documents that the metadata filter cannot separate.
+- **A failed produce does not fail the upload.** `POST /api/documents` writes the row,
+  produces to `documents.ingest.v1`, and answers 201 whether or not the produce succeeded,
+  logging the failure at error level. The document genuinely was created, so 500 would be a
+  lie and a client retrying on it would upload a second copy; the row is `PENDING`, which is
+  exactly what the reconciler sweeps for. This is the one place the API knowingly returns
+  success for a partly completed operation, and it is safe only because the reconciler
+  exists.
+- **The produce happens inside the request, so its timeout is an API concern.**
+  `KAFKA_PRODUCE_TIMEOUT` is spent before the response is written, which is why it has to
+  stay well below `HTTP_WRITE_TIMEOUT`.
 - **`/readyz` will not say which dependency failed.** That is a monitoring endpoint wearing
   the wrong hat, and it publishes the shape of the deployment to anyone who can reach the
   port. It is separate from `/healthz` so a brief MySQL outage does not get the process

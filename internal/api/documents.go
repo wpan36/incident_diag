@@ -14,6 +14,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/httpx"
 	"github.com/wpan36/incident_diag/internal/id"
+	"github.com/wpan36/incident_diag/internal/mq"
 	"github.com/wpan36/incident_diag/internal/store"
 )
 
@@ -119,7 +120,29 @@ func (s *Server) uploadDocument(c *gin.Context) {
 		renderError(c, err)
 		return
 	}
+
+	s.enqueueIngestion(c, doc.ID)
 	renderCreated(c, "/api/documents/"+doc.ID, newDocument(doc))
+}
+
+// enqueueIngestion asks a worker to ingest the document that was just created.
+//
+// A produce that fails is logged and nothing else. The response is still 201,
+// which looks wrong and is deliberate: the document genuinely was created, so
+// 500 would be a lie, and a client that retried on 500 would upload a second
+// copy of the same file. The row is PENDING, which is exactly the state the
+// reconciler exists to find, so the only real cost of a failed produce is that
+// ingestion starts a minute late.
+//
+// Being able to answer honestly here is the first thing the reconciler buys.
+func (s *Server) enqueueIngestion(c *gin.Context, documentID string) {
+	ctx := c.Request.Context()
+	err := s.producer.Produce(ctx, mq.TopicDocumentsIngest, documentID, mq.NewDocumentMessage(documentID))
+	if err == nil {
+		return
+	}
+	s.logger.ErrorContext(ctx, "could not enqueue document for ingestion",
+		"document_id", documentID, "error", err)
 }
 
 // readUpload makes one streaming pass over the multipart body.

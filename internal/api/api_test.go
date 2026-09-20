@@ -16,6 +16,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/httpx"
 	"github.com/wpan36/incident_diag/internal/log"
+	"github.com/wpan36/incident_diag/internal/mq"
 	"github.com/wpan36/incident_diag/internal/store"
 )
 
@@ -45,7 +46,19 @@ func testServer(t *testing.T) (http.Handler, *files.Storage) {
 	if err != nil {
 		t.Fatalf("preparing file storage: %v", err)
 	}
-	return NewServer(nil, fs, log.Discard()).Router(), fs
+	return NewServer(nil, fs, &mq.FakeProducer{}, log.Discard()).Router(), fs
+}
+
+// testServerWithProducer is testServer for the tests that care what was
+// produced, which is only the upload path.
+func testServerWithProducer(t *testing.T) (http.Handler, *files.Storage, *mq.FakeProducer) {
+	t.Helper()
+	fs, err := files.New(t.TempDir(), testMaxUploadBytes)
+	if err != nil {
+		t.Fatalf("preparing file storage: %v", err)
+	}
+	p := &mq.FakeProducer{}
+	return NewServer(nil, fs, p, log.Discard()).Router(), fs, p
 }
 
 // testMaxUploadBytes is small enough that a test can exceed it cheaply.

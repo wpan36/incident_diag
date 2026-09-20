@@ -26,12 +26,12 @@ written, goldfish-tested and committed before those milestones are implemented.
 | | Milestone | Status |
 | --- | --- | --- |
 | **S2** | **Spec: `async-messaging-and-idempotency`** — message schemas, delivery semantics, lease reclaim and the reconciler | **done** |
-| M6 | Kafka (KRaft, single node) in Compose; `internal/mq` over franz-go; `documents.ingest.v1` and `agent.runs.v1`; at-least-once with database-level idempotency; lease reclaim and the reconciler; integration test for duplicate delivery | todo |
+| M6 | Kafka (KRaft, single node) in Compose; `internal/mq` over franz-go; `documents.ingest.v1` and `agent.runs.v1`; at-least-once with database-level idempotency; lease reclaim and the reconciler; `ingestion-worker` with a placeholder handler; integration test for duplicate delivery | **done** |
 | **S3** | **Spec: `document-ingestion-pipeline`** — chunking strategy, Elasticsearch mapping, failure semantics | todo |
 | M7 | Markdown/TXT parser and heading-aware, token-bounded chunker. Pure functions, heavily unit tested | todo |
 | M8 | `internal/embed`: OpenAI-compatible embedding client for hosted `BAAI/bge-m3` (SiliconFlow), with batching, timeouts and bounded retries | todo |
 | M9 | Elasticsearch single node; chunk mapping with `dense_vector`; bulk index and delete-by-document | todo |
-| M10 | `ingestion-worker` end to end: Kafka → parse → chunk → embed → index → `READY`/`FAILED`; upload switches to producing to Kafka | todo |
+| M10 | `ingestion-worker` end to end: the M6 placeholder handler is replaced with parse → chunk → embed → index → `READY`/`FAILED` | todo |
 | **S4** | **Spec: `retrieval-and-evaluation`** — retrieval interface and evaluation method | todo |
 | M11 | Dense kNN retrieval with metadata filtering; `GET /api/search` for debugging | todo |
 | M12 | RAG evaluation: fixed query/document set in `testdata/`, a repeatable Go test reporting Recall@1/3/5, baseline recorded in `docs/rag-eval.md` | todo |

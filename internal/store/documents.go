@@ -47,8 +47,9 @@ type Document struct {
 	Status        string
 	FailureReason *string
 	ChunkCount    int
-	// Attempts and ProcessingStartedAt are ingestion bookkeeping, used by the
-	// lease reclaim S2 will add. They are never returned by the API.
+	// Attempts and ProcessingStartedAt are ingestion bookkeeping: the claim
+	// counts one and stamps the other, and the lease reclaim reads both. They
+	// are never returned by the API.
 	Attempts            int
 	ProcessingStartedAt *time.Time
 	CreatedAt           time.Time
@@ -177,13 +178,31 @@ func (s *Store) ListDocuments(ctx context.Context, f DocumentFilter, p PageParam
 // is in the UPDATE rather than in a preceding SELECT, which is what makes the
 // consumer idempotent: false means another delivery of the same message already
 // claimed this work, and the worker stops.
-func (s *Store) ClaimDocument(ctx context.Context, documentID string) (bool, error) {
+//
+// The third arm of the condition is the lease. A worker that claimed a document
+// and then died leaves it PROCESSING, where nothing above would ever claim it
+// again and no message will ever arrive for it — the document would be stuck
+// permanently. Once its claim is older than lease, another worker may take it.
+//
+// That makes lease the single most dangerous parameter here: it must exceed the
+// longest legitimate processing time, or a slow document is claimed a second
+// time while the first attempt is still working on it. Two workers on one
+// document is survivable — indexing deletes the document's chunks before
+// writing them — but it is waste, not a design goal.
+//
+// A PROCESSING row whose processing_started_at is NULL is never reclaimed,
+// because NULL fails the comparison. Only this method sets PROCESSING and it
+// always writes the timestamp, so such a row means someone wrote status by hand.
+func (s *Store) ClaimDocument(ctx context.Context, documentID string, lease time.Duration) (bool, error) {
 	const q = `UPDATE documents
 	              SET status = ?, attempts = attempts + 1,
 	                  processing_started_at = ?, updated_at = ?
-	            WHERE id = ? AND status IN (?, ?)`
+	            WHERE id = ?
+	              AND ( status IN (?, ?)
+	                 OR ( status = ? AND processing_started_at < ? ) )`
 	t := now()
-	res, err := s.db.ExecContext(ctx, q, DocumentProcessing, t, t, documentID, DocumentPending, DocumentFailed)
+	res, err := s.db.ExecContext(ctx, q, DocumentProcessing, t, t, documentID,
+		DocumentPending, DocumentFailed, DocumentProcessing, t.Add(-lease))
 	if err != nil {
 		return false, dbError(err, "claim document")
 	}

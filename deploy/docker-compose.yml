@@ -1,7 +1,7 @@
 # Local infrastructure for development and integration tests.
 #
 # Services are added as the milestones that need them land. Today that is MySQL
-# alone; Kafka, Elasticsearch, Prometheus and Grafana follow.
+# and Kafka; Elasticsearch, Prometheus and Grafana follow.
 #
 # Values come from the repository's .env (see .env.example). Compose does not
 # find that file on its own: run through `make up` and the rest of the compose
@@ -40,6 +40,55 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
+
+  kafka:
+    image: apache/kafka:4.0.0
+    restart: unless-stopped
+    environment:
+      # KRaft: one container is both the controller quorum and the only broker.
+      # ADR 0005 rules out high availability, so there is nothing to elect.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Two client listeners, because clients reach this broker by two different
+      # names: containers on this network use kafka:9092, and a Go binary or a
+      # test running on the host uses localhost. A broker advertises the address
+      # a client should reconnect on, so getting this wrong produces the
+      # confusing failure where the first connection works and everything after
+      # it times out.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:${KAFKA_PORT:-9094}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      # Single node, so every internal topic is unreplicated.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # No settling delay before the first rebalance. It exists to avoid
+      # reassigning partitions repeatedly while a large group starts up; here it
+      # would only add three seconds to every test.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Auto-creation off, deliberately: it invents a topic with one partition
+      # when a name is misspelled, and the misspelling then looks like a queue
+      # nothing is consuming. internal/mq creates the topics explicitly.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      # Published so tests and locally run binaries can reach the broker. The
+      # advertised EXTERNAL address above must agree with this port.
+      - "${KAFKA_PORT:-9094}:9094"
+    healthcheck:
+      # The broker answering an API request, not the container having started.
+      # make up waits on this, and so does anything with depends_on.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    # No volume, on purpose. The message log here is disposable: MySQL is the
+    # record of progress, and a message lost with the container costs a
+    # re-enqueue from the reconciler, never a document. Mounting a named volume
+    # would also hand the broker a root-owned directory it cannot write to.
 
 volumes:
   mysql-data:

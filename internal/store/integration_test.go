@@ -30,6 +30,11 @@ import (
 	"github.com/wpan36/incident_diag/migrations"
 )
 
+// testLease is the lease these tests claim with. It is long enough that no test
+// trips the reclaim path by accident; the tests that are about the reclaim pass
+// their own value.
+const testLease = time.Hour
+
 // tables in the order they must be truncated is irrelevant — the reset helper
 // disables foreign key checks — but the list has to be complete, or a test
 // inherits rows from the one before it.
@@ -130,7 +135,7 @@ func mustRunningRun(t *testing.T, s *Store, incidentID string) Run {
 	if err != nil {
 		t.Fatalf("creating a run: %v", err)
 	}
-	claimed, err := s.ClaimRun(ctx, r.ID)
+	claimed, err := s.ClaimRun(ctx, r.ID, testLease)
 	if err != nil || !claimed {
 		t.Fatalf("claiming the run: claimed=%v err=%v", claimed, err)
 	}
@@ -287,11 +292,11 @@ func TestDocumentClaimIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	d := mustDocument(t, s)
 
-	claimed, err := s.ClaimDocument(ctx, d.ID)
+	claimed, err := s.ClaimDocument(ctx, d.ID, testLease)
 	if err != nil || !claimed {
 		t.Fatalf("first claim: claimed=%v err=%v", claimed, err)
 	}
-	again, err := s.ClaimDocument(ctx, d.ID)
+	again, err := s.ClaimDocument(ctx, d.ID, testLease)
 	if err != nil {
 		t.Fatalf("second claim: %v", err)
 	}
@@ -310,7 +315,7 @@ func TestDocumentClaimIsIdempotent(t *testing.T) {
 		t.Errorf("attempts = %d, want 1: the rejected claim must not count", after.Attempts)
 	}
 	if after.ProcessingStartedAt == nil {
-		t.Error("processing_started_at was not set; the lease reclaim in S2 depends on it")
+		t.Error("processing_started_at was not set; the lease reclaim depends on it")
 	}
 }
 
@@ -322,7 +327,7 @@ func TestDocumentTerminalWriteRejectsALateDuplicate(t *testing.T) {
 	ctx := context.Background()
 	d := mustDocument(t, s)
 
-	if claimed, err := s.ClaimDocument(ctx, d.ID); err != nil || !claimed {
+	if claimed, err := s.ClaimDocument(ctx, d.ID, testLease); err != nil || !claimed {
 		t.Fatalf("claiming: claimed=%v err=%v", claimed, err)
 	}
 	if ok, err := s.MarkDocumentReady(ctx, d.ID, 12); err != nil || !ok {
@@ -358,14 +363,14 @@ func TestFailedDocumentCanBeReclaimed(t *testing.T) {
 	ctx := context.Background()
 	d := mustDocument(t, s)
 
-	if _, err := s.ClaimDocument(ctx, d.ID); err != nil {
+	if _, err := s.ClaimDocument(ctx, d.ID, testLease); err != nil {
 		t.Fatalf("claiming: %v", err)
 	}
 	if ok, err := s.MarkDocumentFailed(ctx, d.ID, "embedding endpoint refused the batch"); err != nil || !ok {
 		t.Fatalf("marking failed: ok=%v err=%v", ok, err)
 	}
 
-	reclaimed, err := s.ClaimDocument(ctx, d.ID)
+	reclaimed, err := s.ClaimDocument(ctx, d.ID, testLease)
 	if err != nil || !reclaimed {
 		t.Fatalf("re-claiming a failed document: claimed=%v err=%v", reclaimed, err)
 	}
@@ -443,7 +448,7 @@ func TestOneActiveRunPerIncident(t *testing.T) {
 
 	// Finishing the first run releases the incident: a terminal run has a NULL
 	// generated column and NULLs do not collide.
-	if claimed, err := s.ClaimRun(ctx, first.ID); err != nil || !claimed {
+	if claimed, err := s.ClaimRun(ctx, first.ID, testLease); err != nil || !claimed {
 		t.Fatalf("claiming the first run: claimed=%v err=%v", claimed, err)
 	}
 	if ok, err := s.FinishRun(ctx, first.ID, RunOutcome{Status: RunSucceeded, StopReason: StopCompleted}); err != nil || !ok {
@@ -459,7 +464,7 @@ func TestRunClaimAndFinishAreIdempotent(t *testing.T) {
 	ctx := context.Background()
 	r := mustRunningRun(t, s, mustIncident(t, s).ID)
 
-	if again, err := s.ClaimRun(ctx, r.ID); err != nil || again {
+	if again, err := s.ClaimRun(ctx, r.ID, testLease); err != nil || again {
 		t.Fatalf("a redelivered run message claimed an already-running run: again=%v err=%v", again, err)
 	}
 
@@ -754,5 +759,207 @@ func TestListWithAnUnsetLimitUsesTheDefault(t *testing.T) {
 	}
 	if page.NextCursor != "" {
 		t.Errorf("next_cursor = %q, want empty: three rows fit in one default page", page.NextCursor)
+	}
+}
+
+// --- lease reclaim and the reconcile query ----------------------------------
+
+// backdate moves a document's bookkeeping timestamps into the past, which is
+// how these tests reach states that would otherwise need a ten-minute wait.
+func backdate(t *testing.T, s *Store, documentID string, age time.Duration) {
+	t.Helper()
+	past := now().Add(-age)
+	_, err := s.DB().ExecContext(context.Background(),
+		`UPDATE documents SET updated_at = ?, processing_started_at = IF(processing_started_at IS NULL, NULL, ?) WHERE id = ?`,
+		past, past, documentID)
+	if err != nil {
+		t.Fatalf("backdating document %s: %v", documentID, err)
+	}
+}
+
+// TestAbandonedDocumentIsReclaimedOnlyAfterItsLease is the fix for the failure
+// S1 left open: a worker that claims a document and dies leaves it PROCESSING,
+// where every redelivery is refused and the document is stuck forever.
+func TestAbandonedDocumentIsReclaimedOnlyAfterItsLease(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	d := mustDocument(t, s)
+
+	if claimed, err := s.ClaimDocument(ctx, d.ID, testLease); err != nil || !claimed {
+		t.Fatalf("first claim: claimed=%v err=%v", claimed, err)
+	}
+
+	// Still inside the lease: the worker holding it may simply be slow, and
+	// stealing the document would have two workers embedding the same file.
+	if again, err := s.ClaimDocument(ctx, d.ID, time.Hour); err != nil || again {
+		t.Fatalf("a fresh PROCESSING row was reclaimed: claimed=%v err=%v", again, err)
+	}
+
+	backdate(t, s, d.ID, 30*time.Minute)
+
+	reclaimed, err := s.ClaimDocument(ctx, d.ID, 10*time.Minute)
+	if err != nil || !reclaimed {
+		t.Fatalf("reclaiming an abandoned document: claimed=%v err=%v", reclaimed, err)
+	}
+	after, err := s.GetDocument(ctx, d.ID)
+	if err != nil {
+		t.Fatalf("fetching the document: %v", err)
+	}
+	if after.Attempts != 2 {
+		t.Errorf("attempts = %d, want 2: the reclaim is an attempt", after.Attempts)
+	}
+	if after.ProcessingStartedAt == nil || after.ProcessingStartedAt.Before(now().Add(-time.Minute)) {
+		t.Errorf("processing_started_at = %v, want it restamped by the reclaim", after.ProcessingStartedAt)
+	}
+}
+
+// TestAbandonedRunIsReclaimedOnlyAfterItsLease is the same property for runs,
+// where being stuck is worse: uniq_active_run makes the incident reject every
+// new run with 409 until the row moves.
+func TestAbandonedRunIsReclaimedOnlyAfterItsLease(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	// mustRunningRun creates the run and claims it, which is the state a
+	// worker dies in.
+	r := mustRunningRun(t, s, mustIncident(t, s).ID)
+
+	if again, err := s.ClaimRun(ctx, r.ID, time.Hour); err != nil || again {
+		t.Fatalf("a fresh RUNNING row was reclaimed: claimed=%v err=%v", again, err)
+	}
+
+	past := now().Add(-30 * time.Minute)
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE agent_runs SET started_at = ?, updated_at = ? WHERE id = ?`, past, past, r.ID); err != nil {
+		t.Fatalf("backdating the run: %v", err)
+	}
+
+	reclaimed, err := s.ClaimRun(ctx, r.ID, 10*time.Minute)
+	if err != nil || !reclaimed {
+		t.Fatalf("reclaiming an abandoned run: claimed=%v err=%v", reclaimed, err)
+	}
+}
+
+func testReconcilePolicy() ReconcilePolicy {
+	return ReconcilePolicy{
+		PendingAfter: time.Minute,
+		Lease:        10 * time.Minute,
+		MaxAttempts:  3,
+		MinBackoff:   time.Minute,
+	}
+}
+
+// categories indexes candidates by document id, which is what the assertions
+// below are actually about.
+func categories(cs []ReconcileCandidate) map[string]ReconcileCategory {
+	out := make(map[string]ReconcileCategory, len(cs))
+	for _, c := range cs {
+		out[c.ID] = c.Category
+	}
+	return out
+}
+
+func TestListDocumentsToReconcileFindsEachCategory(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// Never enqueued: created, and the produce that should have followed it
+	// never happened.
+	lost := mustDocument(t, s)
+	backdate(t, s, lost.ID, 5*time.Minute)
+
+	// Just created: its produce may still be in flight.
+	fresh := mustDocument(t, s)
+
+	// Abandoned: claimed by a worker that died.
+	abandoned := mustDocument(t, s)
+	if _, err := s.ClaimDocument(ctx, abandoned.ID, testLease); err != nil {
+		t.Fatalf("claiming: %v", err)
+	}
+	backdate(t, s, abandoned.ID, 30*time.Minute)
+
+	// Being worked on right now.
+	working := mustDocument(t, s)
+	if _, err := s.ClaimDocument(ctx, working.ID, testLease); err != nil {
+		t.Fatalf("claiming: %v", err)
+	}
+
+	// Failed once, long enough ago to be due.
+	failed := mustDocument(t, s)
+	if _, err := s.ClaimDocument(ctx, failed.ID, testLease); err != nil {
+		t.Fatalf("claiming: %v", err)
+	}
+	if _, err := s.MarkDocumentFailed(ctx, failed.ID, "embedding endpoint refused the batch"); err != nil {
+		t.Fatalf("marking failed: %v", err)
+	}
+	backdate(t, s, failed.ID, 5*time.Minute)
+
+	// Failed and out of attempts: terminal, waiting for a human.
+	exhausted := mustDocument(t, s)
+	for i := 0; i < 3; i++ {
+		if _, err := s.ClaimDocument(ctx, exhausted.ID, testLease); err != nil {
+			t.Fatalf("claiming: %v", err)
+		}
+		if _, err := s.MarkDocumentFailed(ctx, exhausted.ID, "still broken"); err != nil {
+			t.Fatalf("marking failed: %v", err)
+		}
+	}
+	backdate(t, s, exhausted.ID, time.Hour)
+
+	// Finished, and none of the sweep's business.
+	ready := mustDocument(t, s)
+	if _, err := s.ClaimDocument(ctx, ready.ID, testLease); err != nil {
+		t.Fatalf("claiming: %v", err)
+	}
+	if _, err := s.MarkDocumentReady(ctx, ready.ID, 12); err != nil {
+		t.Fatalf("marking ready: %v", err)
+	}
+	backdate(t, s, ready.ID, time.Hour)
+
+	got, err := s.ListDocumentsToReconcile(ctx, testReconcilePolicy(), 100)
+	if err != nil {
+		t.Fatalf("ListDocumentsToReconcile: %v", err)
+	}
+	found := categories(got)
+
+	want := map[string]ReconcileCategory{
+		lost.ID:      ReconcileNeverEnqueued,
+		abandoned.ID: ReconcileAbandoned,
+		failed.ID:    ReconcileRetryable,
+	}
+	for documentID, category := range want {
+		if found[documentID] != category {
+			t.Errorf("document %s: category = %q, want %q", documentID, found[documentID], category)
+		}
+	}
+	for _, documentID := range []string{fresh.ID, working.ID, exhausted.ID, ready.ID} {
+		if category, ok := found[documentID]; ok {
+			t.Errorf("document %s was selected as %q, want it left alone", documentID, category)
+		}
+	}
+}
+
+// TestListDocumentsToReconcileLimitsEachCategory is why the limit exists: a
+// backlog that built up while Kafka was down must not come back as one
+// thundering herd.
+func TestListDocumentsToReconcileLimitsEachCategory(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 4; i++ {
+		d := mustDocument(t, s)
+		backdate(t, s, d.ID, 5*time.Minute)
+	}
+
+	got, err := s.ListDocumentsToReconcile(ctx, testReconcilePolicy(), 2)
+	if err != nil {
+		t.Fatalf("ListDocumentsToReconcile: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want the limit of 2", len(got))
+	}
+	// Ordered by id, which for ULIDs means oldest first: a backlog drains from
+	// the front instead of starving whatever InnoDB happens to return last.
+	if got[0].ID > got[1].ID {
+		t.Errorf("candidates are not ordered by id: %s then %s", got[0].ID, got[1].ID)
 	}
 }

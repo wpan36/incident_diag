@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/id"
 	"github.com/wpan36/incident_diag/internal/log"
+	"github.com/wpan36/incident_diag/internal/mq"
 	"github.com/wpan36/incident_diag/internal/store"
 	"github.com/wpan36/incident_diag/migrations"
 )
@@ -39,6 +41,14 @@ import (
 var schemaOnce sync.Once
 
 func liveRouter(t *testing.T) (http.Handler, *files.Storage) {
+	t.Helper()
+	h, fs, _ := liveRouterWithProducer(t)
+	return h, fs
+}
+
+// liveRouterWithProducer is liveRouter for the tests that care what was
+// enqueued as well as what was stored.
+func liveRouterWithProducer(t *testing.T) (http.Handler, *files.Storage, *mq.FakeProducer) {
 	t.Helper()
 
 	dsn := os.Getenv("TEST_MYSQL_DSN")
@@ -64,7 +74,8 @@ func liveRouter(t *testing.T) (http.Handler, *files.Storage) {
 	if err != nil {
 		t.Fatalf("preparing file storage: %v", err)
 	}
-	return NewServer(st, fs, log.Discard()).Router(), fs
+	producer := &mq.FakeProducer{}
+	return NewServer(st, fs, producer, log.Discard()).Router(), fs, producer
 }
 
 // uniqueService returns a service name no other test will use, so a listing
@@ -294,4 +305,74 @@ func TestAMultiByteTitleAtTheLimitRoundTrips(t *testing.T) {
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/incidents/"+created.ID, nil))
 	assertSameResource(t, decode[Incident](t, rec), created)
+}
+
+// TestUploadEnqueuesIngestion covers the produce half of the dual write: the
+// row is created and a message naming it goes to the ingestion topic, keyed by
+// the document ID so that every message about one document lands on one
+// partition.
+func TestUploadEnqueuesIngestion(t *testing.T) {
+	h, _, producer := liveRouterWithProducer(t)
+
+	body, contentType := buildUpload(t,
+		uploadPart{field: "file", filename: "runbook.md", content: "# runbook"},
+		uploadPart{field: "document_type", content: "runbook"},
+		uploadPart{field: "service", content: uniqueService(t)},
+	)
+	req := httptest.NewRequest(http.MethodPost, "/api/documents", body)
+	req.Header.Set("Content-Type", contentType)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (%s)", rec.Code, rec.Body.String())
+	}
+	created := decode[Document](t, rec)
+
+	msgs := producer.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("produced %d messages, want 1", len(msgs))
+	}
+	if msgs[0].Topic != mq.TopicDocumentsIngest {
+		t.Errorf("topic = %q, want %q", msgs[0].Topic, mq.TopicDocumentsIngest)
+	}
+	if msgs[0].Key != created.ID {
+		t.Errorf("key = %q, want the document id %q", msgs[0].Key, created.ID)
+	}
+	msg, ok := msgs[0].Msg.(mq.DocumentMessage)
+	if !ok {
+		t.Fatalf("produced %T, want mq.DocumentMessage", msgs[0].Msg)
+	}
+	if msg.DocumentID != created.ID {
+		t.Errorf("document_id = %q, want %q", msg.DocumentID, created.ID)
+	}
+}
+
+// TestUploadStillAnswers201WhenTheBrokerIsDown is the deliberate lie-free
+// answer: the document was created, so 500 would be false and would make a
+// retrying client upload a second copy. The row is PENDING and the reconciler
+// is what makes that safe.
+func TestUploadStillAnswers201WhenTheBrokerIsDown(t *testing.T) {
+	h, _, producer := liveRouterWithProducer(t)
+	producer.Err = errors.New("no broker available")
+
+	body, contentType := buildUpload(t,
+		uploadPart{field: "file", filename: "runbook.md", content: "# runbook"},
+		uploadPart{field: "document_type", content: "runbook"},
+		uploadPart{field: "service", content: uniqueService(t)},
+	)
+	req := httptest.NewRequest(http.MethodPost, "/api/documents", body)
+	req.Header.Set("Content-Type", contentType)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 even with the broker down (%s)", rec.Code, rec.Body.String())
+	}
+
+	// And the row is in the state the sweep looks for.
+	created := decode[Document](t, rec)
+	if created.Status != store.DocumentPending {
+		t.Errorf("status = %q, want PENDING so the reconciler picks it up", created.Status)
+	}
 }

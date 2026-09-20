@@ -19,6 +19,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/log"
+	"github.com/wpan36/incident_diag/internal/mq"
 	"github.com/wpan36/incident_diag/internal/shutdown"
 	"github.com/wpan36/incident_diag/internal/store"
 )
@@ -42,13 +43,14 @@ func run() error {
 	dbCfg, dbErr := config.LoadDatabase()
 	httpCfg, httpErr := config.LoadHTTPServer()
 	docCfg, docErr := config.LoadDocuments()
-	if err := errors.Join(cfgErr, dbErr, httpErr, docErr); err != nil {
+	kafkaCfg, kafkaErr := config.LoadKafka()
+	if err := errors.Join(cfgErr, dbErr, httpErr, docErr, kafkaErr); err != nil {
 		return err
 	}
 
 	logger := log.New(os.Stdout, cfg.LogLevel)
 	logger.Info("starting api", "config", cfg.String(), "database", dbCfg.String(),
-		"http", httpCfg.String(), "documents", docCfg.String())
+		"http", httpCfg.String(), "documents", docCfg.String(), "kafka", kafkaCfg.String())
 
 	// Signals become a cancelled context before anything is opened, so a
 	// Ctrl-C during startup is honoured rather than queued.
@@ -72,13 +74,26 @@ func run() error {
 		return err
 	}
 
+	// Opening the producer does not connect to anything: franz-go dials on the
+	// first produce. A broker that is down is therefore not a startup failure
+	// here, which is the same position the upload handler takes — the row is
+	// written, the reconciler enqueues it, and the API keeps answering.
+	//
+	// Topics are not created here either. The ingestion worker owns that, so
+	// two processes cannot race to create the same topic.
+	producer, err := mq.NewProducer(kafkaCfg)
+	if err != nil {
+		return err
+	}
+	closers.Add("kafka producer", func(context.Context) error { return producer.Close() })
+
 	// gin's debug mode writes its own startup banner and per-route lines, which
 	// would be the only unstructured output this process produces.
 	gin.SetMode(gin.ReleaseMode)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewServer(st, fs, logger).Router(),
+		Handler:           api.NewServer(st, fs, producer, logger).Router(),
 		ReadHeaderTimeout: httpCfg.ReadHeaderTimeout,
 		ReadTimeout:       httpCfg.ReadTimeout,
 		WriteTimeout:      httpCfg.WriteTimeout,

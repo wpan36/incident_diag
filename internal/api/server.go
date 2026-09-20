@@ -19,6 +19,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/httpx"
 	"github.com/wpan36/incident_diag/internal/id"
+	"github.com/wpan36/incident_diag/internal/mq"
 	"github.com/wpan36/incident_diag/internal/store"
 )
 
@@ -31,14 +32,20 @@ const readinessTimeout = 2 * time.Second
 
 // Server holds what the handlers need. It is constructed once at startup.
 type Server struct {
-	store  *store.Store
-	files  *files.Storage
-	logger *slog.Logger
+	store    *store.Store
+	files    *files.Storage
+	producer mq.Producer
+	logger   *slog.Logger
 }
 
 // NewServer builds the server and its router.
-func NewServer(st *store.Store, fs *files.Storage, logger *slog.Logger) *Server {
-	return &Server{store: st, files: fs, logger: logger}
+//
+// The producer is here because creating a document is half of a dual write: the
+// row and the message that tells a worker about it. The handler does not treat
+// the message as part of the transaction — see uploadDocument — but it does
+// have to try.
+func NewServer(st *store.Store, fs *files.Storage, producer mq.Producer, logger *slog.Logger) *Server {
+	return &Server{store: st, files: fs, producer: producer, logger: logger}
 }
 
 // Router returns the configured HTTP handler.

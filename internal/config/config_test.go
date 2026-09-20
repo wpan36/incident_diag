@@ -20,6 +20,9 @@ func isolate(t *testing.T) {
 		"HTTP_READ_HEADER_TIMEOUT", "HTTP_READ_TIMEOUT", "HTTP_WRITE_TIMEOUT",
 		"HTTP_IDLE_TIMEOUT", "HTTP_SHUTDOWN_TIMEOUT",
 		"DOCUMENT_STORAGE_ROOT", "DOCUMENT_MAX_UPLOAD_BYTES",
+		"KAFKA_BROKERS", "KAFKA_PRODUCE_TIMEOUT",
+		"RECONCILE_INTERVAL", "RECONCILE_PENDING_AFTER", "RECONCILE_BATCH",
+		"INGEST_LEASE", "INGEST_MAX_ATTEMPTS",
 	} {
 		t.Setenv(k, "")
 	}
@@ -314,5 +317,116 @@ func TestLoadDocumentsRejectsAnImpossibleLimit(t *testing.T) {
 	t.Setenv("DOCUMENT_MAX_UPLOAD_BYTES", "0")
 	if _, err := LoadDocuments(); err == nil {
 		t.Fatal("LoadDocuments accepted a zero upload limit")
+	}
+}
+
+// --- Kafka ------------------------------------------------------------------
+
+func TestLoadKafkaRequiresBrokers(t *testing.T) {
+	isolate(t)
+
+	// KAFKA_BROKERS has no default: a worker that silently produced to
+	// localhost would look healthy while writing to nothing.
+	if _, err := LoadKafka(); err == nil {
+		t.Fatal("LoadKafka() with no KAFKA_BROKERS succeeded, want an error")
+	} else if !strings.Contains(err.Error(), "KAFKA_BROKERS") {
+		t.Errorf("error = %v, want it to name KAFKA_BROKERS", err)
+	}
+}
+
+func TestLoadKafkaSplitsBrokers(t *testing.T) {
+	isolate(t)
+	t.Setenv("KAFKA_BROKERS", " kafka-1:9092 , kafka-2:9092 ,")
+
+	k, err := LoadKafka()
+	if err != nil {
+		t.Fatalf("LoadKafka(): %v", err)
+	}
+	want := []string{"kafka-1:9092", "kafka-2:9092"}
+	if len(k.Brokers) != len(want) {
+		t.Fatalf("Brokers = %v, want %v", k.Brokers, want)
+	}
+	for i := range want {
+		if k.Brokers[i] != want[i] {
+			t.Errorf("Brokers[%d] = %q, want %q", i, k.Brokers[i], want[i])
+		}
+	}
+	if k.ProduceTimeout != 10*time.Second {
+		t.Errorf("ProduceTimeout = %s, want 10s", k.ProduceTimeout)
+	}
+}
+
+func TestLoadKafkaRejectsAValueThatIsOnlySeparators(t *testing.T) {
+	isolate(t)
+	t.Setenv("KAFKA_BROKERS", ",,")
+
+	if _, err := LoadKafka(); err == nil {
+		t.Fatal("LoadKafka() with KAFKA_BROKERS=,, succeeded, want an error")
+	}
+}
+
+func TestLoadKafkaRejectsAZeroTimeout(t *testing.T) {
+	isolate(t)
+	t.Setenv("KAFKA_BROKERS", "kafka:9092")
+	t.Setenv("KAFKA_PRODUCE_TIMEOUT", "0s")
+
+	if _, err := LoadKafka(); err == nil {
+		t.Fatal("LoadKafka() with a zero produce timeout succeeded, want an error")
+	}
+}
+
+// --- Reconcile --------------------------------------------------------------
+
+func TestLoadReconcileDefaults(t *testing.T) {
+	isolate(t)
+
+	r, err := LoadReconcile()
+	if err != nil {
+		t.Fatalf("LoadReconcile(): %v", err)
+	}
+	if r.Interval != 30*time.Second {
+		t.Errorf("Interval = %s, want 30s", r.Interval)
+	}
+	if r.PendingAfter != time.Minute {
+		t.Errorf("PendingAfter = %s, want 1m", r.PendingAfter)
+	}
+	if r.Batch != 100 {
+		t.Errorf("Batch = %d, want 100", r.Batch)
+	}
+	if r.Lease != 10*time.Minute {
+		t.Errorf("Lease = %s, want 10m", r.Lease)
+	}
+	if r.MaxAttempts != 3 {
+		t.Errorf("MaxAttempts = %d, want 3", r.MaxAttempts)
+	}
+}
+
+func TestLoadReconcileCollectsEveryProblem(t *testing.T) {
+	isolate(t)
+	t.Setenv("RECONCILE_BATCH", "0")
+	t.Setenv("INGEST_MAX_ATTEMPTS", "0")
+	t.Setenv("INGEST_LEASE", "0s")
+
+	_, err := LoadReconcile()
+	if err == nil {
+		t.Fatal("LoadReconcile() with three bad values succeeded, want an error")
+	}
+	for _, want := range []string{"RECONCILE_BATCH", "INGEST_MAX_ATTEMPTS", "INGEST_LEASE"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %s: %v", want, err)
+		}
+	}
+}
+
+func TestLoadReconcileReturnsTheZeroValueOnError(t *testing.T) {
+	isolate(t)
+	t.Setenv("RECONCILE_INTERVAL", "not-a-duration")
+
+	r, err := LoadReconcile()
+	if err == nil {
+		t.Fatal("LoadReconcile() with a malformed interval succeeded, want an error")
+	}
+	if r != (Reconcile{}) {
+		t.Errorf("Reconcile = %+v, want the zero value: a caller that ignores the error must not get something usable", r)
 	}
 }

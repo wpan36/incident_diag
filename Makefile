@@ -61,14 +61,20 @@ race:
 # Running `go test -tags=integration ./...` by hand without this flag is the
 # one way to see these tests fail spuriously.
 #
-# TEST_MYSQL_DSN is checked here rather than left to the tests. The tests skip
-# without it so that `go test ./...` stays green on a machine with no
-# infrastructure, but this target is the explicit opt-in: reporting success
-# while every database test silently skipped is worse than failing.
+# TEST_MYSQL_DSN and TEST_KAFKA_BROKERS are checked here rather than left to
+# the tests. The tests skip without them so that `go test ./...` stays green on
+# a machine with no infrastructure, but this target is the explicit opt-in:
+# reporting success while every database or messaging test silently skipped is
+# worse than failing.
 .PHONY: test-integration
 test-integration:
 	@if [ -z "$$TEST_MYSQL_DSN" ]; then \
 		echo "TEST_MYSQL_DSN is not set, so every integration test would skip."; \
+		echo "Copy .env.example to .env and run 'make up' first."; \
+		exit 1; \
+	fi
+	@if [ -z "$$TEST_KAFKA_BROKERS" ]; then \
+		echo "TEST_KAFKA_BROKERS is not set, so every messaging test would skip."; \
 		echo "Copy .env.example to .env and run 'make up' first."; \
 		exit 1; \
 	fi

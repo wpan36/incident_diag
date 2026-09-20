@@ -23,6 +23,9 @@ the Kafka consumers idempotent (ADR 0003).
 - `tool_calls.go` — `ToolCall`, `NewToolCall`, the tool-call statuses, create and
   list-by-run.
 - `evidence.go` — `Evidence`, `NewEvidence`, the evidence sources, create and list-by-run.
+- `reconcile.go` — the vocabulary the sweep reads rows with: `ReconcileCategory`,
+  `ReconcilePolicy`, `ReconcileCandidate` and `ListDocumentsToReconcile`. The runs
+  equivalent lands with M25.
 - `store_test.go` — unit tests for the pure parts: DSN verification, truncation,
   pagination arithmetic, error classification.
 - `integration_test.go` — `//go:build integration`. Real MySQL, including the migration
@@ -30,12 +33,27 @@ the Kafka consumers idempotent (ADR 0003).
 
 ## How it fits in
 
-Sits between the schema in `migrations/` and everything that reads or writes it: `api`
-today, the ingestion and agent workers later. It imports `config` for the DSN and pool
-settings, and `httpx` to classify what it returns.
+Sits between the schema in `migrations/` and everything that reads or writes it: `api`,
+`ingest` and `reconcile` today, the agent worker later. It imports `config` for the DSN and
+pool settings, and `httpx` to classify what it returns.
 
 ## Gotchas
 
+- **Both claim methods take a lease, and it has to be the same value the reconciler uses.**
+  The claim's third condition is "PROCESSING, but stamped longer ago than the lease", which
+  is what rescues a row from a worker that died holding it. If the two disagreed, the sweep
+  would re-enqueue rows the claim then refuses — a silent, endless loop. The lease must also
+  exceed the longest legitimate processing time, or a slow document is claimed twice while
+  the first attempt is still working.
+- **`ClaimDocument` accepts `FAILED`, so a redelivery after a failure really does retry.**
+  That is how a re-enqueued document gets another attempt at all, but it means a Kafka
+  replay of an already-failed message starts the work again immediately and burns an
+  attempt, skipping the backoff the reconciler would have applied. Per-record commit keeps
+  that to the one record a crash was holding. `ClaimRun` deliberately does not accept
+  `FAILED`: a failed investigation has steps and evidence recorded against it.
+- **`ListDocumentsToReconcile` is looser than the policy on purpose.** It narrows the scan
+  with the shortest backoff in the schedule; `internal/reconcile` decides per row. Keeping
+  the decision in Go is what stops the SQL and the intent from drifting apart.
 - **A transition method returns `(bool, error)`, and `false` is not a failure.** Zero rows
   affected means the transition was not legal from the current state, which under
   at-least-once delivery normally means a redelivery of work already done. A caller that

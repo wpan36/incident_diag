@@ -193,12 +193,25 @@ func (s *Store) ListRunsByIncident(ctx context.Context, incidentID string, p Pag
 // The same claim pattern as ClaimDocument, and for the same reason: false means
 // this Kafka message is a redelivery of a run already started, and the worker
 // stops rather than investigating the incident twice.
-func (s *Store) ClaimRun(ctx context.Context, runID string) (bool, error) {
+//
+// The lease works as it does for documents, against started_at, and matters
+// more here: a run abandoned in RUNNING keeps active_incident_id set, so
+// uniq_active_run makes the incident reject every new run with 409 until the
+// lease lets something reclaim it.
+//
+// Unlike a document, a FAILED run is not re-claimable. A failed ingestion can be
+// retried because it is a pure function of a file; a failed investigation has
+// steps, tool calls and evidence recorded against it, and re-running it under
+// the same row would interleave two investigations in one timeline.
+func (s *Store) ClaimRun(ctx context.Context, runID string, lease time.Duration) (bool, error) {
 	const q = `UPDATE agent_runs
 	              SET status = ?, attempts = attempts + 1, started_at = ?, updated_at = ?
-	            WHERE id = ? AND status = ?`
+	            WHERE id = ?
+	              AND ( status = ?
+	                 OR ( status = ? AND started_at < ? ) )`
 	t := now()
-	res, err := s.db.ExecContext(ctx, q, RunRunning, t, t, runID, RunPending)
+	res, err := s.db.ExecContext(ctx, q, RunRunning, t, t, runID,
+		RunPending, RunRunning, t.Add(-lease))
 	if err != nil {
 		return false, dbError(err, "claim agent run")
 	}
