@@ -29,7 +29,7 @@ written, goldfish-tested and committed before those milestones are implemented.
 | M6 | Kafka (KRaft, single node) in Compose; `internal/mq` over franz-go; `documents.ingest.v1` and `agent.runs.v1`; at-least-once with database-level idempotency; integration test for duplicate delivery | todo |
 | **S3** | **Spec: `document-ingestion-pipeline`** — chunking strategy, Elasticsearch mapping, failure semantics | todo |
 | M7 | Markdown/TXT parser and heading-aware, token-bounded chunker. Pure functions, heavily unit tested | todo |
-| M8 | vLLM embedding profile (bge-m3) in Compose; `internal/embed` OpenAI-compatible client with batching, timeouts and bounded retries | todo |
+| M8 | `internal/embed`: OpenAI-compatible embedding client for hosted `BAAI/bge-m3` (SiliconFlow), with batching, timeouts and bounded retries | todo |
 | M9 | Elasticsearch single node; chunk mapping with `dense_vector`; bulk index and delete-by-document | todo |
 | M10 | `ingestion-worker` end to end: Kafka → parse → chunk → embed → index → `READY`/`FAILED`; upload switches to producing to Kafka | todo |
 | **S4** | **Spec: `retrieval-and-evaluation`** — retrieval interface and evaluation method | todo |
@@ -96,6 +96,6 @@ written, goldfish-tested and committed before those milestones are implemented.
 | M31 | End-to-end test: inject a fault, file an incident, run the agent, assert it used retrieval and tools and named the right service (Tier B) | todo |
 | **S10** | **Spec: `hybrid-retrieval`** — fusion algorithm and weighting | todo |
 | M32 | BM25 + dense recall fused with RRF; re-run the evaluation and record the comparison in `docs/rag-eval.md`, including a null result | todo |
-| M33 | Local chat model Compose profile and provider-switch smoke test; finish `docs/architecture.md`, demo script, screenshots, README | todo |
+| M33 | Provider-switch smoke test against a second hosted OpenAI-compatible provider; finish `docs/architecture.md`, demo script, screenshots, README | todo |
 
 *Phase close:* full-repository `mean-review`, root `CLAUDE.md`.

@@ -1,7 +1,7 @@
 # Local infrastructure for development and integration tests.
 #
 # Services are added as the milestones that need them land. Today that is MySQL
-# alone; Kafka, Elasticsearch, vLLM, Prometheus and Grafana follow.
+# alone; Kafka, Elasticsearch, Prometheus and Grafana follow.
 #
 # Values come from the repository's .env (see .env.example). Compose does not
 # find that file on its own: run through `make up` and the rest of the compose

@@ -44,15 +44,15 @@ to any system it investigates, and its tools are restricted by explicit allowlis
   └───┬───────┬───┘ └──┬──────────┬─────────┬───┘
       │       │        │          │         │
       │  ┌────▼────────▼───┐  ┌───▼─────┐ ┌─▼────────┐
-      │  │ Elasticsearch   │  │  LLM    │ │ ops-mcp  │
-      │  │ chunks: BM25 +  │  │(DeepSeek│ │ MCP over │
-      │  │ dense_vector    │  │ or vLLM)│ │  HTTP    │
+      │  │ Elasticsearch   │  │  chat   │ │ ops-mcp  │
+      │  │ chunks: BM25 +  │  │  LLM    │ │ MCP over │
+      │  │ dense_vector    │  │DeepSeek │ │  HTTP    │
       │  └────▲────────────┘  └─────────┘ └─┬────────┘
       │       │                             │
   ┌───▼───────┴──┐                  ┌───────▼─────────────────┐
-  │ vLLM         │                  │     Incident Lab        │
+  │ embeddings   │                  │     Incident Lab        │
   │ bge-m3       │                  │ checkout-service        │
-  │ embeddings   │                  │   -> payment-service    │
+  │(SiliconFlow) │                  │   -> payment-service    │
   └──────────────┘                  │ Prometheus / logs       │
                                     └─────────────────────────┘
 ```
@@ -93,7 +93,7 @@ POST /api/documents
         -> ingestion-worker consumes
              -> parse (Markdown / TXT)
              -> chunk (heading-aware, token-bounded)
-             -> embed (vLLM, OpenAI-compatible /v1/embeddings)
+             -> embed (OpenAI-compatible /v1/embeddings)
              -> bulk index into Elasticsearch
         -> MySQL: status READY, or FAILED with a reason
 ```
@@ -184,9 +184,14 @@ EMBEDDING_BASE_URL / EMBEDDING_API_KEY / EMBEDDING_MODEL
 ```
 
 The runtime knows nothing about the provider. In practice the chat model is DeepSeek and
-the embedding model is `BAAI/bge-m3` served locally by vLLM; a compose profile with a
-small local chat model exists to demonstrate that switching `LLM_BASE_URL` is the only
-change needed. See [ADR 0002](adr/0002-vllm-serves-embeddings.md).
+the embedding model is `BAAI/bge-m3` hosted by SiliconFlow, both reached over the same
+protocol.
+
+Neither runs locally, which is deliberate: the project requires no GPU and no model
+weights, so anyone can clone it and run the whole stack. Vendor independence is
+demonstrated by a smoke test that points `LLM_BASE_URL` at a second hosted provider and
+runs an investigation unchanged. See [ADR 0006](adr/0006-hosted-embeddings-drop-vllm.md),
+which supersedes ADR 0002.
 
 ## Retrieval
 

@@ -19,8 +19,8 @@ systems it investigates.
 
 <!-- TODO(M33): docker compose quickstart -->
 
-Requires Go 1.26+, Docker with Compose v2+, and an NVIDIA GPU for the local embedding
-server.
+Requires Go 1.26+ and Docker with Compose v2+. No GPU: the chat and embedding models are
+both reached over hosted OpenAI-compatible APIs.
 
 Copy `.env.example` to `.env` and fill in your LLM credentials. The Makefile
 loads that file and hands it to both docker compose and the Go binaries, so

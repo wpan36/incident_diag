@@ -1,7 +1,11 @@
 # ADR 0002: vLLM serves embeddings; the chat model is DeepSeek
 
-**Status:** accepted
+**Status:** superseded by [ADR 0006](0006-hosted-embeddings-drop-vllm.md)
 **Date:** 2026-09-20
+
+> Kept for the record. The reasoning below is sound on its own terms, but it optimized
+> for demonstrating local model serving at the cost of requiring a GPU to run the project
+> at all. ADR 0006 reverses it in favour of hosted embeddings.
 
 ## Context
 
