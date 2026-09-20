@@ -22,7 +22,9 @@ systems it investigates.
 Requires Go 1.26+, Docker with Compose v2+, and an NVIDIA GPU for the local embedding
 server.
 
-Copy `.env.example` to `.env` and fill in your LLM credentials.
+Copy `.env.example` to `.env` and fill in your LLM credentials. The Makefile
+loads that file and hands it to both docker compose and the Go binaries, so
+nothing needs exporting by hand.
 
 ## Architecture
 
@@ -32,7 +34,15 @@ Copy `.env.example` to `.env` and fill in your LLM credentials.
 
 ```sh
 make check            # gofmt + go vet + go test + go test -race
-make test-integration # also runs the tests that need the compose stack
+make up               # start the local infrastructure (MySQL today)
+make migrate-up       # apply the schema
+make test-integration # also runs the tests that need the compose stack (serially)
+make down             # stop it again; make down-clean also drops the data
 ```
+
+`make check` never needs infrastructure. The integration tests skip themselves unless
+`TEST_MYSQL_DSN` is set, so they are opt-in rather than a hidden prerequisite; `.env`
+supplies it. Run these through `make` — `.env` is not a shell script and sourcing it
+fails on the unquoted DSN.
 
 Design documents live in `docs/plans/`, architecture decision records in `docs/adr/`.

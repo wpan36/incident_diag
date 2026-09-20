@@ -79,6 +79,22 @@ func (e *env) optionalInt(key string, def int) int {
 	return n
 }
 
+// optionalInt64 returns the value of key parsed as a 64-bit integer, or def if
+// unset. It exists for byte counts, which are not bounded by int on every
+// platform this could be built for.
+func (e *env) optionalInt64(key string, def int64) int64 {
+	v, ok := lookup(key)
+	if !ok {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		e.fail("%s must be an integer, got %q", key, v)
+		return def
+	}
+	return n
+}
+
 // optionalBool returns the value of key parsed as a boolean, or def if unset.
 // It accepts the same spellings as strconv.ParseBool (1, t, true, 0, f, false,
 // and their capitalizations).

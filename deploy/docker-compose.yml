@@ -1,0 +1,45 @@
+# Local infrastructure for development and integration tests.
+#
+# Services are added as the milestones that need them land. Today that is MySQL
+# alone; Kafka, Elasticsearch, vLLM, Prometheus and Grafana follow.
+#
+# Values come from the repository's .env (see .env.example). Compose does not
+# find that file on its own: run through `make up` and the rest of the compose
+# targets, which pass --project-directory so the repository root, rather than
+# this directory, is where .env is looked for.
+
+name: incident_diag
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-incident_diag}
+      MYSQL_USER: ${MYSQL_USER:-incident}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-incident}
+    # The server's own defaults would be utf8mb4_general_ci; the schema is
+    # written for utf8mb4_0900_ai_ci and the two sort differently.
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    ports:
+      # Published so `go test -tags=integration` can reach it from the host.
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # Other services will wait on this with
+      # `depends_on: { condition: service_healthy }`, so it has to mean "ready
+      # to answer queries" rather than "the container started". The server
+      # restarts itself once during first-run initialization, which is what
+      # start_period covers.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root --password=\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  mysql-data:

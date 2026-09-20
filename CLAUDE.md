@@ -65,13 +65,14 @@ propose a commit message. Commits are made by the user, not automatically.
 ## Layout
 
 ```
-cmd/        api, ingestion-worker, agent-worker, ops-mcp, and the Incident Lab services
-internal/   the packages those binaries are built from
-web/        React + TypeScript front end
-deploy/     docker compose, Prometheus config, Grafana dashboards
-testdata/   knowledge corpus and the RAG evaluation set
-docs/       workflow, roadmap, architecture, ADRs, feature specs
-.claude/    rules and skills — committed deliberately, they are part of the project
+cmd/         api, migrate, ingestion-worker, agent-worker, ops-mcp, and the Incident Lab services
+internal/    the packages those binaries are built from
+migrations/  numbered SQL schema migrations, embedded into the binaries that apply them
+web/         React + TypeScript front end
+deploy/      docker compose, Prometheus config, Grafana dashboards
+testdata/    knowledge corpus and the RAG evaluation set
+docs/        workflow, roadmap, architecture, ADRs, feature specs
+.claude/     rules and skills — committed deliberately, they are part of the project
 ```
 
 Directories gain their own `CLAUDE.md` as they are built, maintained by the

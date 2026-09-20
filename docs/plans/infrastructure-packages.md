@@ -60,6 +60,11 @@ and `errors.As` keep working through the layers.
 contract and belongs to the `data-model-and-api-surface` spec (S1). M2 provides
 `StatusFor(err) int` and the error kinds; S1 decides what goes on the wire.
 
+> **Revised by S1.** `data-model-and-api-surface.md` adds `Fields map[string]string` to
+> `httpx.Error` so a validation failure can report every offending field in one response.
+> That field is part of the envelope this section deferred, so it is decided there, not
+> here.
+
 ## Alternatives
 
 **`github.com/joho/godotenv` for `.env` parsing.** Convenient for `go run`, but it adds a

@@ -7,13 +7,20 @@ import (
 	"time"
 )
 
-// isolate clears the variables Load reads, so a test is not affected by
-// whatever the developer happens to have exported in their shell. Setting a
-// variable to the empty string is equivalent to unsetting it here, because
-// lookup treats blank as absent.
+// isolate clears every variable any loader in this package reads, so a test is
+// not affected by whatever the developer happens to have exported in their
+// shell — a .env sourced for `make up` sets most of these. Setting a variable
+// to the empty string is equivalent to unsetting it here, because lookup treats
+// blank as absent.
 func isolate(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"APP_ENV", "HTTP_ADDR", "LOG_LEVEL"} {
+	for _, k := range []string{
+		"APP_ENV", "HTTP_ADDR", "LOG_LEVEL",
+		"MYSQL_DSN", "DB_MAX_OPEN_CONNS", "DB_MAX_IDLE_CONNS", "DB_CONN_MAX_LIFETIME",
+		"HTTP_READ_HEADER_TIMEOUT", "HTTP_READ_TIMEOUT", "HTTP_WRITE_TIMEOUT",
+		"HTTP_IDLE_TIMEOUT", "HTTP_SHUTDOWN_TIMEOUT",
+		"DOCUMENT_STORAGE_ROOT", "DOCUMENT_MAX_UPLOAD_BYTES",
+	} {
 		t.Setenv(k, "")
 	}
 }
@@ -210,5 +217,102 @@ func TestMalformedValueStillReturnsTheDefault(t *testing.T) {
 	// secondary problems while the rest of the config is being collected.
 	if got := e.optionalInt("N", 7); got != 7 {
 		t.Errorf("optionalInt on a bad value = %d, want the default 7", got)
+	}
+}
+
+func TestLoadDatabase(t *testing.T) {
+	isolate(t)
+	const dsn = "incident:incident@tcp(127.0.0.1:3306)/incident_diag?parseTime=true&loc=UTC"
+	t.Setenv("MYSQL_DSN", dsn)
+
+	db, err := LoadDatabase()
+	if err != nil {
+		t.Fatalf("LoadDatabase: %v", err)
+	}
+	if db.DSN != dsn {
+		t.Errorf("DSN = %q", db.DSN)
+	}
+	if db.MaxOpenConns != 25 || db.MaxIdleConns != 25 || db.ConnMaxLifetime != 5*time.Minute {
+		t.Errorf("defaults not applied: %+v", db)
+	}
+}
+
+func TestLoadDatabaseRequiresTheDSN(t *testing.T) {
+	isolate(t)
+	if _, err := LoadDatabase(); err == nil {
+		t.Fatal("LoadDatabase succeeded without MYSQL_DSN")
+	} else if !strings.Contains(err.Error(), "MYSQL_DSN") {
+		t.Errorf("error = %q, want it to name the missing variable", err)
+	}
+}
+
+func TestLoadDatabaseReportsEveryProblemAtOnce(t *testing.T) {
+	isolate(t)
+	t.Setenv("DB_MAX_OPEN_CONNS", "0")
+	t.Setenv("DB_CONN_MAX_LIFETIME", "forever")
+
+	_, err := LoadDatabase()
+	if err == nil {
+		t.Fatal("LoadDatabase succeeded")
+	}
+	for _, want := range []string{"MYSQL_DSN", "DB_MAX_OPEN_CONNS", "DB_CONN_MAX_LIFETIME"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %s too", err, want)
+		}
+	}
+}
+
+func TestDatabaseStringHidesTheDSN(t *testing.T) {
+	d := Database{DSN: "incident:hunter2@tcp(127.0.0.1:3306)/incident_diag"}
+	if strings.Contains(d.String(), "hunter2") {
+		t.Fatalf("String() leaks the password: %s", d.String())
+	}
+}
+
+func TestLoadHTTPServerDefaults(t *testing.T) {
+	isolate(t)
+	s, err := LoadHTTPServer()
+	if err != nil {
+		t.Fatalf("LoadHTTPServer: %v", err)
+	}
+	if s.ReadHeaderTimeout != 5*time.Second || s.ShutdownTimeout != 15*time.Second {
+		t.Errorf("defaults not applied: %+v", s)
+	}
+}
+
+func TestLoadHTTPServerRejectsAMalformedDuration(t *testing.T) {
+	isolate(t)
+	t.Setenv("HTTP_READ_TIMEOUT", "soon")
+	if _, err := LoadHTTPServer(); err == nil {
+		t.Fatal("LoadHTTPServer accepted a malformed duration")
+	}
+}
+
+func TestLoadDocuments(t *testing.T) {
+	isolate(t)
+	d, err := LoadDocuments()
+	if err != nil {
+		t.Fatalf("LoadDocuments: %v", err)
+	}
+	if d.StorageRoot != DefaultDocumentStorageRoot || d.MaxUploadBytes != 10<<20 {
+		t.Errorf("defaults not applied: %+v", d)
+	}
+
+	t.Setenv("DOCUMENT_STORAGE_ROOT", "/srv/documents")
+	t.Setenv("DOCUMENT_MAX_UPLOAD_BYTES", "1048576")
+	d, err = LoadDocuments()
+	if err != nil {
+		t.Fatalf("LoadDocuments: %v", err)
+	}
+	if d.StorageRoot != "/srv/documents" || d.MaxUploadBytes != 1<<20 {
+		t.Errorf("overrides not applied: %+v", d)
+	}
+}
+
+func TestLoadDocumentsRejectsAnImpossibleLimit(t *testing.T) {
+	isolate(t)
+	t.Setenv("DOCUMENT_MAX_UPLOAD_BYTES", "0")
+	if _, err := LoadDocuments(); err == nil {
+		t.Fatal("LoadDocuments accepted a zero upload limit")
 	}
 }
