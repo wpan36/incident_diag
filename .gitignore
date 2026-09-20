@@ -1,0 +1,22 @@
+# Secrets — never commit. .env.example is the committed template.
+.env
+.env.*
+!.env.example
+
+# Build output
+/bin/
+/dist/
+
+# Local runtime data (bind mounts used by docker compose)
+/data/
+
+# Node / frontend
+node_modules/
+web/dist/
+
+# Editor / OS
+.DS_Store
+*.swp
+
+# NOTE: .claude/ is intentionally NOT ignored. The rules, skills and context
+# hierarchy in this repo are part of the project, not local scratch.
