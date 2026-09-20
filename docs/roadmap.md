@@ -25,8 +25,8 @@ written, goldfish-tested and committed before those milestones are implemented.
 
 | | Milestone | Status |
 | --- | --- | --- |
-| **S2** | **Spec: `async-messaging-and-idempotency`** — message schemas and delivery semantics | todo |
-| M6 | Kafka (KRaft, single node) in Compose; `internal/mq` over franz-go; `documents.ingest.v1` and `agent.runs.v1`; at-least-once with database-level idempotency; integration test for duplicate delivery | todo |
+| **S2** | **Spec: `async-messaging-and-idempotency`** — message schemas, delivery semantics, lease reclaim and the reconciler | **done** |
+| M6 | Kafka (KRaft, single node) in Compose; `internal/mq` over franz-go; `documents.ingest.v1` and `agent.runs.v1`; at-least-once with database-level idempotency; lease reclaim and the reconciler; integration test for duplicate delivery | todo |
 | **S3** | **Spec: `document-ingestion-pipeline`** — chunking strategy, Elasticsearch mapping, failure semantics | todo |
 | M7 | Markdown/TXT parser and heading-aware, token-bounded chunker. Pure functions, heavily unit tested | todo |
 | M8 | `internal/embed`: OpenAI-compatible embedding client for hosted `BAAI/bge-m3` (SiliconFlow), with batching, timeouts and bounded retries | todo |
