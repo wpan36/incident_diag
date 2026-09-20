@@ -13,7 +13,7 @@ written, goldfish-tested and committed before those milestones are implemented.
 | | Milestone | Status |
 | --- | --- | --- |
 | M1 | Repository bootstrap: git, Go module, Makefile, `.gitignore`, `.env.example`, README skeleton | **done** |
-| M2 | Infrastructure packages: `config`, `log`, `shutdown`, `httpx`. Unit tests only | todo |
+| M2 | Infrastructure packages: `config`, `log`, `shutdown`, `httpx`. Unit tests only | **done** |
 | **S1** | **Spec: `data-model-and-api-surface`** — schema and state machine contract | todo |
 | M3 | MySQL in Compose; migrations for `documents`, `incidents`, `agent_runs`, `agent_steps`, `tool_calls`; `database/sql` store with state transitions as conditional updates; integration tests behind `-tags=integration` that skip cleanly without infrastructure | todo |
 | M4 | Gin API skeleton: `/healthz`, request-id and logging middleware, uniform error responses, incident create/list/get | todo |
