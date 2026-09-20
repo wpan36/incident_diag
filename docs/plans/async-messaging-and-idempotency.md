@@ -80,6 +80,34 @@ Messages are **thin**. They carry the entity's ID and nothing else of substance:
 
 `agent.runs.v1` is identical with `run_id` in place of `document_id`.
 
+**The wire format is flat, and the Go types keep it flat.** `Envelope` holds only the three
+fields every message shares and is embedded, not nested, so the JSON above is exactly what
+goes on the wire — there is no `payload` object:
+
+```go
+type Envelope struct {
+    SchemaVersion int       `json:"schema_version"`
+    MessageID     string    `json:"message_id"`  // ULID, from internal/id
+    ProducedAt    time.Time `json:"produced_at"`
+}
+
+type DocumentMessage struct {
+    Envelope
+    DocumentID string `json:"document_id"`
+}
+
+type RunMessage struct {
+    Envelope
+    RunID string `json:"run_id"`
+}
+```
+
+One message type per topic rather than a generic envelope with a `json.RawMessage` payload:
+a handler is written against the topic it consumes, so it should receive the type that topic
+carries, checked at compile time, instead of decoding a second time. The cost is that adding
+a topic means adding a type, which is the right amount of friction for a decision that
+changes the contract between two services.
+
 A fat message carrying the document's `service`, `document_type` or path would be a second
 copy of state that MySQL owns, and it goes stale the moment anything edits the row between
 produce and consume. The worker looks the row up; that read is cheap and always current.
@@ -106,13 +134,22 @@ lie, and a client that retried on 500 would upload a second copy. The row is `PE
 reconciler will enqueue it within a minute, and the only cost of the failed produce is that
 delay. Being able to answer honestly here is the first payoff of having a reconciler.
 
+`KAFKA_PRODUCE_TIMEOUT` is spent **inside the HTTP request**: with the broker down, an
+upload blocks for it before answering 201. It therefore has to stay comfortably below
+`HTTP_WRITE_TIMEOUT` (30s by default), and the two are worth reading together before either
+is changed.
+
 ### Consuming
 
 One consumer group per worker: `ingestion-worker` on `documents.ingest.v1`, `agent-worker`
-on `agent.runs.v1`. Automatic commit is disabled; records are committed explicitly after
-their handler returns.
+on `agent.runs.v1`. Automatic commit is disabled.
 
-Records are handled one at a time in poll order and the batch is committed afterwards.
+Records are handled one at a time in poll order, and **each record's offset is committed as
+soon as its own handler returns** — not once per polled batch. A crash therefore replays at
+most the one record that was in flight. Committing per batch would be fewer calls, but it
+replays every already-finished record in the batch, and because `ClaimDocument` accepts
+`FAILED` those replays would re-run documents that had just failed, burning an attempt and
+skipping the reconciler's backoff. Per-record commit keeps that window to one message.
 Parallelism comes from partitions and from running more worker instances, not from
 concurrency inside one worker — which keeps the failure model small enough to reason about.
 
@@ -131,15 +168,27 @@ once the budget is spent. They are never retried by withholding a commit.
 If the message names a row that does not exist at all, there is nothing to mark. The
 handler logs at error level and commits, because redelivering it forever cannot help.
 
-**Long-running handlers.** An agent run may take minutes, up to `MaxRunDuration`. If the
-handler blocks longer than the group's rebalance timeout, the broker evicts the member, the
-message is redelivered, and `ClaimRun` then refuses it because the row is `RUNNING`. The
-`agent-worker` group therefore sets session and rebalance timeouts comfortably above
-`MaxRunDuration`.
+**A `FAILED` row does not record whether the failure was worth retrying.** `failure_reason`
+is free text, so a file that can never be parsed and a five-second embedding outage leave
+the same shape behind, and the reconciler will re-enqueue both until the attempt limit is
+reached. A `retryable` flag on the row would separate them; it is not worth a schema change
+while the attempt limit bounds the waste at two extra runs. Recorded as accepted below.
+
+**Long-running handlers (M25, not M6).** An agent run may take minutes, up to
+`MaxRunDuration`. If the handler blocks longer than the group's rebalance timeout, the
+broker evicts the member, the message is redelivered, and `ClaimRun` then refuses it because
+the row is `RUNNING`. The `agent-worker` group therefore sets session and rebalance timeouts
+comfortably above `MaxRunDuration`.
 
 This couples two settings, and the coupling has to be written down rather than discovered:
 **raising `MaxRunDuration` requires raising the agent worker's rebalance timeout.** The
 worker validates this at startup and refuses to run if the timeout is not greater.
+
+None of this is implementable in M6: `MaxRunDuration` arrives with the bounded agent loop in
+M23 and the `agent-worker` binary with M25. It is specified here because it constrains how
+the run-side configuration is named and validated when M25 adds it, and because a consumer
+group whose rebalance timeout is discovered after the fact is discovered through a production
+symptom.
 
 ### Lease reclaim
 
@@ -160,7 +209,7 @@ The last parameter is `now - lease`. `ClaimRun` is the same shape against `start
 The lease must exceed the longest legitimate processing time, or a slow document gets
 claimed twice while the first attempt is still working. Ingestion's lease defaults to 10
 minutes; the run lease defaults to `MaxRunDuration` plus a margin and is validated at
-startup the same way the rebalance timeout is.
+startup the same way the rebalance timeout is — both with M25.
 
 Two workers processing the same document after a lease expiry is possible and harmless:
 indexing deletes the document's existing chunks before writing, so the second run converges
@@ -174,15 +223,27 @@ A goroutine owned by the worker, started with it and stopped by its context, swe
 
 | Category | Condition | Fixes |
 | --- | --- | --- |
-| Never enqueued | `status = 'PENDING'` and `updated_at < now - 60s` | a failed or lost produce |
+| Never enqueued | `status = 'PENDING'` and `updated_at < now - RECONCILE_PENDING_AFTER` | a failed or lost produce |
 | Abandoned | `status = 'PROCESSING'` and `processing_started_at < now - lease` | a crashed worker |
-| Retryable failure | `status = 'FAILED'` and `attempts < 3` and `updated_at < now - backoff(attempts)` | a transient outage |
+| Retryable failure | `status = 'FAILED'` and `attempts < INGEST_MAX_ATTEMPTS` and `updated_at < now - backoff(attempts)` | a transient outage |
 
-Backoff on attempts is 1, 5 and 15 minutes. After three attempts a document stays `FAILED`
-with its reason visible, and needs a human.
+**The backoff schedule is 1 minute then 5 minutes, and that is the whole schedule.**
+`attempts` is incremented by the claim, so after the first failure it reads 1, and the
+document is re-enqueued once `updated_at` is `backoff(1) = 1m` old; after the second it
+reads 2 and waits `backoff(2) = 5m`; after the third, `attempts < INGEST_MAX_ATTEMPTS` is
+false and the row is left alone. Three attempts total, two waits. `backoff(n)` for any
+`n` beyond the schedule returns the last entry, so raising `INGEST_MAX_ATTEMPTS` adds
+5-minute retries rather than producing an undefined delay.
+
+The queries order by `id`, so a backlog larger than `RECONCILE_BATCH` is drained oldest
+first instead of in whatever order InnoDB happens to return.
 
 The reconciler only produces messages. It never changes status itself, so there is exactly
 one place where a state transition happens — the claim — and the reconciler cannot race it.
+
+The price of not writing anything is that a row keeps matching until a worker claims it: a
+sweep every 30 seconds re-produces the same message for a row that is enqueued but not yet
+picked up. That is harmless and it is not free — see the accepted limitations.
 
 The batch limit matters: without it, a backlog that builds up while Kafka is down becomes a
 thundering herd the moment it returns.
@@ -196,12 +257,29 @@ exactly this.
 
 `internal/mq`, thin wrappers over franz-go rather than an abstraction over messaging:
 
-- `Producer` — `Produce(ctx, topic, key string, msg any) error`, envelope encoding and
-  trace headers included. An interface, because the reconciler's unit tests need a fake.
-- `Consumer` — a group consumer driven by a `Handler func(ctx, Envelope) error`, owning
-  the poll and commit loop and exiting on context cancellation.
+- `Envelope`, `DocumentMessage`, `RunMessage` — the types above, plus
+  `NewDocumentMessage(id)` and `NewRunMessage(id)`, which stamp the schema version, a fresh
+  ULID `message_id` and `produced_at`. Producers never fill an envelope by hand.
+- `Producer` — `Produce(ctx, topic, key string, msg any) error`: JSON-marshals `msg` as it
+  is, sets the `content-type` and `traceparent` headers, and waits for the broker's
+  acknowledgement. It does not inject envelope fields — the constructors did that, which is
+  why the wire format can stay flat. An interface, because the reconciler's unit tests need
+  a fake.
+- `Consumer` — a group consumer owning the poll and per-record commit loop and exiting on
+  context cancellation, driven by `Handler func(ctx context.Context, rec Record) error`
+  where `Record` carries the key, value and headers. `internal/mq` stays unaware of which
+  message type a topic carries.
+- `Decode[T](data []byte) (T, error)` — the generic decode the handler calls on
+  `rec.Value`. It checks `schema_version` and returns a distinguishable
+  `ErrUnknownSchemaVersion`, so the handler can mark the row `FAILED` rather than retry.
+  Unknown fields are ignored.
 - `EnsureTopics(ctx, brokers, specs) error` — idempotent creation.
-- `Envelope` — encode and decode, with the schema version check.
+
+**`EnsureTopics` runs in `ingestion-worker` and creates both topics**, even though nothing
+consumes `agent.runs.v1` until M25: `cmd/api` is a producer only and does not create topics,
+so an API started before the worker will fail its produce until the worker comes up. That is
+the already-accepted 201-plus-reconciler path, not a new failure mode, and it keeps topic
+creation in one place instead of racing two processes.
 
 The ingestion and agent handlers live in their own packages. M6 delivers `internal/mq`, the
 topics, the compose service and the reconciler's policy; the real ingestion handler is M10.
@@ -209,8 +287,12 @@ topics, the compose service and the reconciler's policy; the real ingestion hand
 ### Store additions
 
 - `ClaimDocument` and `ClaimRun` take a lease duration.
-- `ListDocumentsToReconcile(ctx, policy, limit) ([]string, error)` returning IDs only,
-  one query per category or one with a compound predicate.
+- `ListDocumentsToReconcile(ctx, policy ReconcilePolicy, limit int) ([]ReconcileCandidate, error)`,
+  where a candidate is the document ID and the category that matched, and `limit` applies
+  **per category**. Returning the category rather than a bare ID is what lets the log and
+  the later metric say whether a sweep is repairing lost produces or reclaiming crashed
+  workers, which are very different things to see rising. One query per category, ordered
+  by `id`.
 - The equivalent for runs lands with M25.
 
 ### Configuration added
@@ -224,7 +306,17 @@ topics, the compose service and the reconciler's policy; the real ingestion hand
 | `RECONCILE_INTERVAL` | `30s` | |
 | `RECONCILE_PENDING_AFTER` | `60s` | |
 | `RECONCILE_BATCH` | `100` | |
+| `KAFKA_PORT` | `9092` | compose only, published for the host |
 | `TEST_KAFKA_BROKERS` | — | integration tests skip without it |
+
+`KAFKA_PORT` exists for the same reason `MYSQL_PORT` does: a broker already listening on
+9092 would otherwise break the setup quietly, and the published port has to agree with the
+host half of `TEST_KAFKA_BROKERS`. All of these go into `.env.example` with the same kind
+of comment the MySQL block has.
+
+The run-side settings — the run lease and the agent worker's session and rebalance timeouts
+— are **not** added here. They depend on `MaxRunDuration`, which M23 introduces, and they
+belong to the `LoadAgentWorker` that M25 adds.
 
 Consumer group names and topic names are constants, not configuration: they are part of the
 contract between producer and consumer, and making them settable invites two services
@@ -232,9 +324,19 @@ disagreeing.
 
 ### Compose
 
-Kafka in KRaft mode, single node, with a health check, alongside the existing MySQL
-service. `make up` starts both; `make test-integration` additionally requires
-`TEST_KAFKA_BROKERS`.
+Kafka in KRaft mode, single node, from the official `apache/kafka` image (combined
+controller and broker, one listener published on `KAFKA_PORT` and an internal listener for
+the worker container), alongside the existing MySQL service. The health check runs
+`kafka-broker-api-versions.sh` against the broker's own listener, because `make up` uses
+`--wait` and "the container started" is not the same as "the broker answers".
+
+`make up` starts both. `make test-integration` gains a guard on `TEST_KAFKA_BROKERS`
+alongside the existing `TEST_MYSQL_DSN` one, for the reason already written there: a run
+that reports success while every Kafka test silently skipped is worse than one that fails.
+
+The image choice is the one unilateral call in this spec — `apache/kafka` is the upstream
+image and needs no vendor-specific environment variables, but `bitnami/kafka` would work
+and is more widely written about.
 
 ## Alternatives
 
@@ -267,22 +369,47 @@ copy of state that can go stale between produce and consume.
 **Treating `FAILED` as terminal.** Simpler semantics, but a five-second outage of the
 embedding provider would then require re-ingesting every affected document by hand.
 
+**An envelope wrapping an opaque payload.** One `Handler func(ctx, Envelope) error` for
+every topic, with the body as `json.RawMessage`. Rejected because it buys uniformity nobody
+needs — there are two topics and each has exactly one consumer — and pays for it with a
+nested wire format and a second decode step inside every handler.
+
+**Committing once per polled batch.** Fewer commit calls, but a crash replays every record
+in the batch, and a replay of an already-failed document re-runs it immediately instead of
+after the reconciler's backoff.
+
+**Another Kafka client.** ADR 0001 chose Kafka, not a client library. franz-go is picked
+here: it supports KRaft, the idempotent producer and consumer groups without a separate
+cluster-admin dependency, and `kadm` covers topic creation. `sarama` and
+`confluent-kafka-go` would both work; the latter needs cgo and librdkafka, which is a real
+cost for a project meant to build with `go build` alone.
+
 ## Detailed Implementation
 
 **M6 delivers:**
 
-- `deploy/docker-compose.yml` — Kafka (KRaft, single node) with a health check.
-- `internal/mq` — `Envelope` encode/decode, `Producer`, group `Consumer`, `EnsureTopics`,
-  plus a fake producer for tests.
+- `deploy/docker-compose.yml` — Kafka (KRaft, single node) with a health check;
+  `.env.example` and `Makefile` updated for the new variables and the integration guard.
+- `internal/mq` — the message types and their constructors, `Decode`, `Producer`, group
+  `Consumer`, `EnsureTopics`, plus a fake producer for tests.
 - `internal/config` — the Kafka and reconciler variables above, using the existing typed
-  helpers.
+  helpers. `LoadKafka` and `LoadReconcile` rather than fields on `Load`, following the
+  existing split by concern — `cmd/migrate` must not need a broker.
 - `internal/store` — lease parameters on both claim methods; `ListDocumentsToReconcile`.
 - `internal/reconcile` — the sweep policy as a pure function over row state plus a runner
   goroutine with an explicit lifecycle.
 - `cmd/api` — produce to `documents.ingest.v1` after creating a document; still 201 on
   produce failure.
-- A placeholder consumer that claims and immediately marks the document failed with "not
-  implemented", so the loop is exercisable end to end before M10 replaces it.
+- **`cmd/ingestion-worker`** — a new binary, added here rather than at M10: `EnsureTopics`,
+  the consumer group, the reconciler goroutine, and the same graceful shutdown path
+  `cmd/api` uses. Its handler is a placeholder that claims the document and immediately
+  marks it failed with "not implemented", so the whole loop — produce, consume, claim,
+  terminal write, reconcile — is exercisable end to end and observable in a smoke test
+  before M10 replaces the handler and nothing else.
+
+The placeholder makes the retry policy visible: every uploaded document is claimed, failed,
+re-enqueued after a minute, failed, re-enqueued after five, and left `FAILED` with three
+attempts. That is the design working, and it is worth knowing before watching the logs.
 
 **Test isolation.** Integration tests suffix topic and consumer group names with a ULID, so
 parallel or repeated runs cannot see each other's messages, and no test depends on a
@@ -290,20 +417,25 @@ cleanly wiped broker.
 
 ## Verification
 
-- `make check` — envelope encoding including unknown fields and an unknown schema version;
-  the reconciler policy as a table test over row age, status and attempt count; backoff
-  computation. None of it needs infrastructure.
+- `make check` — message encoding and decoding, including that the JSON is flat, that an
+  unknown field is ignored and that an unknown `schema_version` returns
+  `ErrUnknownSchemaVersion`; the reconciler policy as a table test over row age, status and
+  attempt count; `backoff(n)` including `n` past the end of the schedule. None of it needs
+  infrastructure.
 - `make test-integration` with Kafka and MySQL running:
   - produce and consume a message; the handler sees it exactly once
   - deliver the same message twice; exactly one claim succeeds, the second is skipped
-  - kill and restart a consumer mid-batch; no work is lost
+  - kill a consumer mid-batch and restart it; no work is lost, and only the record that was
+    in flight is redelivered — the ones already committed are not
   - two consumers in one group; partitions are assigned across both
   - a `PENDING` row that was never produced is picked up by the reconciler
   - a stale `PROCESSING` row can be reclaimed; a fresh one cannot
-  - a `FAILED` row under the attempt limit is retried after its backoff; one over the
-    limit is left alone
+  - a `FAILED` row under the attempt limit is retried after its backoff; one at the limit
+    is left alone
+  - `EnsureTopics` twice in a row succeeds and leaves three partitions
 - Manual smoke: upload a document with Kafka stopped, observe the 201 and the logged
-  produce failure, start Kafka, and watch the reconciler enqueue it within a minute.
+  produce failure, start Kafka, and watch the reconciler enqueue it within a minute — then
+  watch the placeholder handler fail it and the retry schedule play out.
 
 ## Known limitations, accepted
 
@@ -315,9 +447,26 @@ worth the complexity while Compose runs one instance.
 **The reconciler polls.** Every 30 seconds against an indexed status column, which is
 cheap, but it is polling rather than an event.
 
+**A row is re-enqueued on every sweep until it is claimed.** Because the reconciler writes
+nothing, a row it has already produced a message for still matches on the next sweep. When
+the worker keeps up this costs at most one duplicate; when it does not — a single worker
+draining a backlog serially at tens of seconds per document, which is exactly what M10's
+embedding calls will look like — the same hundred rows are re-produced every 30 seconds for
+as long as the drain takes. The claim keeps the result correct and the key keeps the
+ordering safe, so the cost is wasted messages and noisy logs. A `last_enqueued_at` column
+would fix it, at the price of the reconciler writing to the rows it is supposed to only
+read, which is the property that keeps it free of races with the claim. Revisit if M10's
+logs are unreadable.
+
+**Permanent and transient failures are not distinguished.** A file that can never be parsed
+is retried on the same schedule as a brief provider outage. The attempt limit caps the waste
+at two extra runs, which is cheaper than a `retryable` column and the discipline of setting
+it correctly at every failure site.
+
 **A document that fails three times needs a human**, and there is no endpoint for that
 person to use. It is visible through `GET /api/documents` with its `failure_reason`.
 
 **Two coupled settings.** `MaxRunDuration` must stay below the agent worker's rebalance
 timeout, and the run lease must stay above it. The worker validates both at startup rather
-than trusting anyone to remember.
+than trusting anyone to remember — a validation that lands with M25, since neither setting
+exists before it.
