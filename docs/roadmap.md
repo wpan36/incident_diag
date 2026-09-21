@@ -35,14 +35,9 @@ written, goldfish-tested and committed before those milestones are implemented.
 | M11 | Dense kNN retrieval with metadata filtering; `GET /api/search` for debugging (Tier B) | **done** |
 | M12 | Knowledge corpus in `testdata/knowledge/` (runbook, postmortem, service docs) and the evaluation set built from it; a repeatable Go test reporting Recall@1/3/5, baseline in `docs/rag-eval.md`. The corpus is written once here and reused by Phase C and the agent evaluation. **It must contain deliberate confusables** — several documents sharing symptoms and metric names, so a query has to discriminate rather than match the only document on its topic; see the note below (Tier B) | **done** |
 
-**Why M12's corpus needs confusables.** Measured after M10: a full runbook produces about
-four chunks and a short one produces a single chunk. Ten unrelated documents therefore give
-roughly forty chunks, and if each query targets the only document on its topic, dense
-retrieval finds it almost every time — Recall@3 lands near 1.0 and distinguishes nothing.
-The corpus must make retrieval discriminate: `checkout-service` and `payment-service` both
-with a latency runbook, a database runbook that also describes pool exhaustion, and queries
-whose correct answer is only one of them. Recall will be lower and will mean something. The
-same corpus serves Phase C and the agent evaluation.
+**M12's corpus contains deliberate confusables** — several documents sharing symptoms and
+metric names — so a query has to discriminate rather than match the only document on its
+topic. Baseline and what the numbers do and do not mean: `docs/rag-eval.md`.
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 
