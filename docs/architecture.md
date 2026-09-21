@@ -20,7 +20,7 @@ to any system it investigates, and its tools are restricted by explicit allowlis
 ```
                     ┌─────────────┐
                     │   Browser   │
-                    │ React + TS  │
+                    │ static HTML │
                     └──────┬──────┘
                            │ REST + SSE
                     ┌──────▼──────────────────────────┐
@@ -45,7 +45,7 @@ to any system it investigates, and its tools are restricted by explicit allowlis
       │       │        │          │         │
       │  ┌────▼────────▼───┐  ┌───▼─────┐ ┌─▼────────┐
       │  │ Elasticsearch   │  │  chat   │ │ ops-mcp  │
-      │  │ chunks: BM25 +  │  │  LLM    │ │ MCP over │
+      │  │ chunks:         │  │  LLM    │ │ MCP over │
       │  │ dense_vector    │  │DeepSeek │ │  HTTP    │
       │  └────▲────────────┘  └─────────┘ └─┬────────┘
       │       │                             │
@@ -153,6 +153,12 @@ Every run is bounded by `MaxSteps`, `MaxToolCalls`, `MaxRunDuration` and a token
 Unbounded loops are not possible: hitting a bound is a normal, tested outcome that
 produces a partial result rather than an error.
 
+**A run that is interrupted resumes rather than restarts.** Every step, tool call and piece
+of evidence is already written to MySQL as it happens, so a run reclaimed by the lease after
+a worker crash rebuilds its context from those rows and continues from the last persisted
+step. The rows were originally persisted to make a run auditable; they double as its
+checkpoint.
+
 `context.Context` is threaded through the entire loop, so cancelling a run cancels the
 in-flight LLM request and tool call rather than waiting for them.
 
@@ -195,11 +201,14 @@ which supersedes ADR 0002.
 
 ## Retrieval
 
-Phase one is dense vector retrieval with metadata filtering on `service` and
-`document_type`. Hybrid retrieval — BM25 and dense recall fused with RRF — comes after the
-rest of the system is stable, measured against the same fixed evaluation set so the change
-can be shown to help or not. Retrieval quality is tracked in `docs/rag-eval.md` with
-Recall@1/3/5.
+Dense vector retrieval with metadata filtering on `service` and `document_type`, measured
+against a fixed evaluation set and tracked in `docs/rag-eval.md` with Recall@1/3/5.
+
+Hybrid retrieval — BM25 and dense recall fused with RRF — was planned and then dropped.
+Dense retrieval plus filtering plus a recall measurement already demonstrates the retrieval
+work this system needs; fusion tuning is search-engine depth that this project is not
+about, and the effort is better spent on the agent runtime. See
+[ADR 0007](adr/0007-project-focus.md).
 
 ## Incident Lab
 

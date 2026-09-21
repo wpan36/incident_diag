@@ -62,7 +62,7 @@ stale as the source changes.
 
 ## Which milestones get the full treatment
 
-Running design discussion, spec writing and a goldfish test for all 33 milestones would
+Running design discussion, spec writing and a goldfish test for all 34 milestones would
 cost more than it returns. The dividing line is fixed in advance so it does not get
 re-argued each time.
 
@@ -72,14 +72,14 @@ re-argued each time.
   interface, log format), or
 - introduces a **state machine**, or concurrency and lifecycle semantics, or
 - establishes a **security boundary** (path jailing, allowlists), or
-- involves an **algorithmic choice with trade-offs** (chunking strategy, retrieval fusion,
-  context budgeting).
+- involves an **algorithmic choice with trade-offs** (chunking strategy, context budgeting,
+  resuming an interrupted run).
 
 **Tier B — a short spec, then implement.** Mechanical work that fills in an already-agreed
 contract: adding another MCP tool, wiring a Grafana dashboard, writing a demo service,
 building a front-end page. The spec is a half page in `docs/plans/`; no goldfish test.
 
-Ten Tier A specs are planned; see `docs/roadmap.md`.
+Nine Tier A specs are planned; see `docs/roadmap.md`.
 
 ## Every milestone ends the same way
 

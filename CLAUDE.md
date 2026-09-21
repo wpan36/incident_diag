@@ -68,7 +68,7 @@ propose a commit message. Commits are made by the user, not automatically.
 cmd/         api, migrate, ingestion-worker, agent-worker, ops-mcp, and the Incident Lab services
 internal/    the packages those binaries are built from
 migrations/  numbered SQL schema migrations, embedded into the binaries that apply them
-web/         React + TypeScript front end
+web/         single static HTML page, no build step
 deploy/      docker compose, Prometheus config, Grafana dashboards
 testdata/    knowledge corpus and the RAG evaluation set
 docs/        workflow, roadmap, architecture, ADRs, feature specs

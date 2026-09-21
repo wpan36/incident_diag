@@ -1,6 +1,6 @@
 # Roadmap
 
-33 implementation milestones across 7 phases, plus 10 Tier A specs. See
+34 implementation milestones across 7 phases, plus 9 Tier A specs. See
 `docs/workflow.md` for what Tier A and Tier B mean and how each milestone is executed.
 
 **Status legend:** `done` · `in progress` · `todo`
@@ -34,7 +34,7 @@ written, goldfish-tested and committed before those milestones are implemented.
 | M10 | `ingestion-worker` end to end: the M6 placeholder handler is replaced with parse → chunk → embed → index → `READY`/`FAILED` | todo |
 | **S4** | **Spec: `retrieval-and-evaluation`** — retrieval interface and evaluation method | todo |
 | M11 | Dense kNN retrieval with metadata filtering; `GET /api/search` for debugging | todo |
-| M12 | RAG evaluation: fixed query/document set in `testdata/`, a repeatable Go test reporting Recall@1/3/5, baseline recorded in `docs/rag-eval.md` | todo |
+| M12 | Knowledge corpus in `testdata/knowledge/` (runbook, postmortem, service docs) and the evaluation set built from it; a repeatable Go test reporting Recall@1/3/5, baseline in `docs/rag-eval.md`. The corpus is written once here and reused by Phase C and the agent evaluation | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 
@@ -45,7 +45,7 @@ written, goldfish-tested and committed before those milestones are implemented.
 | **S5** | **Spec: `incident-lab-and-log-contract`** — fault injection model and the structured log format that `read_service_logs` consumes | todo |
 | M13 | `checkout-service` → `payment-service`, each with a business endpoint, `/health`, `/metrics`, and `/fault` injecting latency, 5xx and CPU load; structured JSON logs to a mounted directory | todo |
 | M14 | Prometheus scraping both services; Grafana with a provisioned datasource | todo |
-| M15 | Knowledge corpus in `testdata/knowledge/`: runbook, postmortem, service docs; a script reproducing the payment-service latency incident | todo |
+| M15 | Fault scenarios: a script reproducing the payment-service latency incident and the other injectable faults, against the corpus M12 already wrote | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 
@@ -66,13 +66,14 @@ written, goldfish-tested and committed before those milestones are implemented.
 
 | | Milestone | Status |
 | --- | --- | --- |
-| **S7** | **Spec: `agent-runtime`** — types, state machine, context budget, limits and failure semantics | todo |
+| **S7** | **Spec: `agent-runtime`** — types, state machine, context budget, limits, failure semantics, and resuming a run from its last persisted step | todo |
 | M21 | LLM client: OpenAI-compatible chat completions with streaming, timeouts, bounded retries, token accounting; tolerant structured-output parser; scriptable fake | todo |
 | M22 | Core types and `ContextBuilder`: `AgentRun`, `AgentStep`, `Action`, `Observation`, `ToolCall`, `Evidence`, `FinalResult`; context assembled within a token budget; no chain-of-thought persisted | todo |
 | M23 | Bounded agent loop: `MaxSteps`, `MaxToolCalls`, `MaxRunDuration`, token budget. Deterministic tests for convergence, each limit, cancellation, malformed output and tool failure — no infrastructure required | todo |
+| M23a | Checkpoint and resume: a run reclaimed after a crash continues from its last persisted step instead of restarting, rebuilding context from `agent_steps` and re-validating stale tool observations | todo |
 | **S8** | **Spec: `agent-execution-and-events`** — event schema and worker idempotency | todo |
 | M24 | Redis Streams event bus: event schema, publisher, capped and expiring streams | todo |
-| M25 | `agent-worker`: run creation produces to Kafka; worker executes the loop, persists steps and tool calls, publishes events, writes the final result; redelivery does not duplicate a run | todo |
+| M25 | `agent-worker`: run creation produces to Kafka; worker executes the loop, persists steps and tool calls, publishes events, writes the final result; redelivery does not duplicate a run; a lease-reclaimed run resumes rather than restarts | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 
@@ -83,7 +84,7 @@ written, goldfish-tested and committed before those milestones are implemented.
 | **S9** | **Spec: `sse-streaming`** — reconnection semantics and goroutine lifecycle | todo |
 | M26 | SSE endpoint reading the run's Redis Stream; `Last-Event-ID` reconnection; explicit goroutine leak tests | todo |
 | M27 | Streaming answer: final diagnosis reaches the browser as `answer.delta` events, persisted once complete | todo |
-| M28 | Minimal front end (Tier B): Vite + React + TS — upload, incident creation, run start, live timeline, final diagnosis with references | todo |
+| M28 | Minimal front end (Tier B): a single static HTML page with vanilla JS and the browser's native `EventSource` — upload, incident creation, run start, live timeline, final diagnosis with references. No build step | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 
@@ -94,8 +95,7 @@ written, goldfish-tested and committed before those milestones are implemented.
 | M29 | OpenTelemetry across the API, Kafka produce/consume with context propagation, retrieval, embedding, LLM, MCP calls and agent runs — one run, one trace (Tier B) | todo |
 | M30 | Prometheus metrics and two Grafana dashboards: agent run health and pipeline health (Tier B) | todo |
 | M31 | End-to-end test: inject a fault, file an incident, run the agent, assert it used retrieval and tools and named the right service (Tier B) | todo |
-| **S10** | **Spec: `hybrid-retrieval`** — fusion algorithm and weighting | todo |
-| M32 | BM25 + dense recall fused with RRF; re-run the evaluation and record the comparison in `docs/rag-eval.md`, including a null result | todo |
+| M32 | Agent evaluation (Tier B): run the agent against every injectable fault scenario and report diagnosis accuracy, steps, tool calls, token cost and latency percentiles in `docs/agent-eval.md`. Includes scenarios the agent should fail to diagnose, so the numbers mean something | todo |
 | M33 | Provider-switch smoke test against a second hosted OpenAI-compatible provider; finish `docs/architecture.md`, demo script, screenshots, README | todo |
 
 *Phase close:* full-repository `mean-review`, root `CLAUDE.md`.
