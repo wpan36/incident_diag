@@ -10,10 +10,17 @@ import (
 )
 
 // Action types: what the agent decided to do on a step.
+//
+// ActionNone is a response that called no tool at all. It is persisted rather
+// than dropped because these tables exist to make a run auditable, and "the
+// model stopped calling tools" is the single most useful thing an evaluation
+// can count. The column is VARCHAR rather than an ENUM precisely so this set
+// can grow without a migration.
 const (
 	ActionRetrieve = "retrieve"
 	ActionToolCall = "tool_call"
 	ActionFinish   = "finish"
+	ActionNone     = "none"
 )
 
 // Step outcomes.

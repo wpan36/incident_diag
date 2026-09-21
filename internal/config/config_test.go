@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,9 @@ func isolate(t *testing.T) {
 		"EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
 		"EMBED_BATCH_SIZE", "EMBED_TIMEOUT", "EMBED_MAX_RETRIES",
 		"ELASTICSEARCH_URL", "ES_INDEX_ALIAS",
+		"LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_TIMEOUT", "LLM_MAX_RETRIES",
+		"AGENT_MAX_STEPS", "AGENT_MAX_TOOL_CALLS", "AGENT_MAX_RUN_DURATION",
+		"AGENT_MAX_PROMPT_TOKENS",
 		"CHECKOUT_PAYMENT_URL", "CHECKOUT_PAYMENT_TIMEOUT",
 		"PAYMENT_POOL_SIZE", "PAYMENT_PROCESSOR_LATENCY_MS", "LAB_LOG_DIR",
 	} {
@@ -720,5 +724,91 @@ func TestOpsMCPStringNamesWhatTheAgentCanReach(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("String() = %q, missing %q", got, want)
 		}
+	}
+}
+
+func TestLoadLLM(t *testing.T) {
+	isolate(t)
+	// All three provider settings are required, as for the embedding
+	// provider: there is no sensible default for an endpoint, a key or a
+	// model.
+	if _, err := LoadLLM(); err == nil {
+		t.Fatal("LoadLLM accepted an empty environment")
+	}
+
+	t.Setenv("LLM_BASE_URL", "https://api.example.com/v1")
+	t.Setenv("LLM_API_KEY", "secret")
+	t.Setenv("LLM_MODEL", "deepseek-chat")
+
+	c, err := LoadLLM()
+	if err != nil {
+		t.Fatalf("LoadLLM: %v", err)
+	}
+	if c.Timeout != 60*time.Second || c.MaxRetries != 2 {
+		t.Errorf("defaults not applied: %+v", c)
+	}
+	if strings.Contains(c.String(), "secret") {
+		t.Errorf("String() leaks the API key: %s", c.String())
+	}
+
+	t.Setenv("LLM_TIMEOUT", "0s")
+	if _, err := LoadLLM(); err == nil {
+		t.Fatal("LoadLLM accepted a zero timeout")
+	}
+}
+
+func TestLoadAgentDefaults(t *testing.T) {
+	isolate(t)
+	a, err := LoadAgent()
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if a.MaxSteps != 8 || a.MaxToolCalls != 12 ||
+		a.MaxRunDuration != 5*time.Minute || a.MaxPromptTokens != 60000 {
+		t.Errorf("defaults not applied: %+v", a)
+	}
+	if !strings.Contains(a.String(), "max_steps=8") {
+		t.Errorf("String() = %q", a.String())
+	}
+}
+
+// The agent never prunes its context, and the reason that is safe is
+// arithmetic. A step count the token ceiling cannot hold must be refused at
+// startup rather than discovered as a TOKEN_BUDGET stop halfway through a run.
+func TestLoadAgentEnforcesTheContextInvariant(t *testing.T) {
+	isolate(t)
+	t.Setenv("AGENT_MAX_STEPS", "200")
+
+	_, err := LoadAgent()
+	if err == nil {
+		t.Fatal("LoadAgent accepted a step count its token ceiling cannot hold")
+	}
+	for _, want := range []string{"AGENT_MAX_STEPS", "AGENT_MAX_PROMPT_TOKENS"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to name %s", err, want)
+		}
+	}
+
+	// Raising the ceiling to what the loader itself computes is enough.
+	t.Setenv("AGENT_MAX_PROMPT_TOKENS", strconv.Itoa(Agent{MaxSteps: 200}.WorstCasePromptTokens()))
+	if _, err := LoadAgent(); err != nil {
+		t.Fatalf("LoadAgent refused exactly its own worst case: %v", err)
+	}
+}
+
+func TestLoadAgentRejectsNonPositiveBounds(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"AGENT_MAX_STEPS", "0"},
+		{"AGENT_MAX_TOOL_CALLS", "0"},
+		{"AGENT_MAX_RUN_DURATION", "0s"},
+		{"AGENT_MAX_PROMPT_TOKENS", "0"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			isolate(t)
+			t.Setenv(tc.key, tc.value)
+			if _, err := LoadAgent(); err == nil {
+				t.Errorf("%s=%s was accepted", tc.key, tc.value)
+			}
+		})
 	}
 }

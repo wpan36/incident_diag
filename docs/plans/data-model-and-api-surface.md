@@ -147,9 +147,10 @@ UNIQUE KEY uniq_active_run (active_incident_id)
 #### `agent_steps`
 
 `id` PK, `run_id` FK, `step_number` `INT` (unique per run), `action_type` (`retrieve` |
-`tool_call` | `finish`), `action` `JSON`, `observation_summary` `MEDIUMTEXT` NULL,
-`observation_bytes` `INT`, `truncated` `BOOL`, `status` (`OK` | `ERROR`), `error` `TEXT`
-NULL, `duration_ms` `INT`, `created_at`.
+`tool_call` | `finish` | `none` — `none` added by the agent runtime spec for a response that
+called no tool, and free for the same reason `REFUSED` is below), `action` `JSON`,
+`observation_summary` `MEDIUMTEXT` NULL, `observation_bytes` `INT`, `truncated` `BOOL`,
+`status` (`OK` | `ERROR`), `error` `TEXT` NULL, `duration_ms` `INT`, `created_at`.
 
 Indexes: `(run_id, id)` for reading a run's timeline, which is the common query, and a
 `UNIQUE` key on `(run_id, step_number)`.

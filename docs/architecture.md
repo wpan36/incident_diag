@@ -138,8 +138,8 @@ is the part of this project worth understanding. Core concepts:
 - `Action` — the structured decision the LLM returned
 - `ToolCall` / `Observation` — a tool invocation and its result
 - `Evidence` — an observation the agent chose to keep as supporting its conclusion
-- `FinalResult` — probable root cause, affected service, supporting evidence, suggested
-  next actions, references
+- `FinalResult` — probable root cause, affected service, suggested next actions, and the
+  evidence it rests on, which is what the diagnosis cites as its references
 
 The loop:
 

@@ -99,3 +99,9 @@ pool settings, and `httpx` to classify what it returns.
   `TEST_MYSQL_DSN` is unset.
 - **No chain-of-thought is persisted anywhere in this schema.** `Step.Action` holds the
   structured decision, never the reasoning behind it.
+- **`action_type` and `tool_calls.status` are `VARCHAR`, not `ENUM`, so the sets can grow
+  without a migration** — which the agent runtime spec used to add `ActionNone` and
+  `ToolCallRefused`. `ActionNone` is a response that called no tool, and it is the only
+  case in which `StepError` appears: a step whose tool refused, failed or timed out is
+  still `StepOK`, because a step's status says whether it produced an observation, not
+  whether the observation was good news.

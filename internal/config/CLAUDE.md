@@ -23,6 +23,11 @@ anything partly valid. The environment is the only source: Compose supplies `.en
   budget) and `LoadEmbedding`.
 - `search.go` — `Search` (Elasticsearch URL, index alias), `LoadSearch` and
   `DefaultIndexAlias`.
+- `llm.go` — `LLM` (chat endpoint, key, model, per-attempt timeout, retry budget) and
+  `LoadLLM`. A separate provider from the embeddings one: DeepSeek has no embeddings
+  endpoint.
+- `agent.go` — `Agent` (the four bounds on one run), `LoadAgent`, `BytesPerToken` and
+  `WorstCasePromptTokens`.
 - `opsmcp.go` — `OpsMCP` (Prometheus endpoint, probe targets, log root and services, and
   the per-tool limits), `LoadOpsMCP`, `parseTargets` and `checkAbsoluteHTTP`. Everything
   the agent can reach is in this one struct.
@@ -56,6 +61,16 @@ timeouts.
 - **`Reconcile` holds the `INGEST_`-prefixed variables**, which reads oddly until you
   need them: the lease is what both `ClaimDocument` and the sweep mean by "abandoned", and
   they have to be the same value or the sweep re-enqueues rows the claim then refuses.
+- **`LoadAgent` is the second loader that checks a relationship between two of its own
+  values.** The agent never prunes its context, and what makes that safe is arithmetic:
+  `AGENT_MAX_STEPS` observations of 8 KiB plus the incident and the system prompt must fit
+  inside `AGENT_MAX_PROMPT_TOKENS`. Raising the step count alone is refused at startup
+  rather than discovered as a `TOKEN_BUDGET` stop halfway through a run.
+- **`BytesPerToken` and the 8 KiB observation cap are duplicated here on purpose.** This
+  package imports nothing from the project: the real token estimator is in
+  `internal/ingest`, which depends on this one through `store`, and the cap is
+  `summary.LimitBytes`. `internal/agent` estimates prompts with `BytesPerToken`, so the
+  invariant and the run-time bound cannot disagree.
 - **`LoadReconcile` is the one loader that checks a relationship between two values**:
   `INGEST_DOCUMENT_TIMEOUT` must be shorter than `INGEST_LEASE`, or a handler is still
   working on a document another worker is already free to claim. It is validated here
