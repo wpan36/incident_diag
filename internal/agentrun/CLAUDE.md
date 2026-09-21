@@ -18,9 +18,9 @@ Specified by `docs/plans/agent-execution-and-events.md` (S8).
 ## How it fits in
 
 It mirrors `internal/ingest`: the same decode/claim/terminal-write frame, and for the same
-reason — the claim is a conditional UPDATE and `FinishRun` is conditional on `RUNNING`.
-`cmd/agent-worker` builds a `Handler` and hands `Handler.Handle` to `mq.Consumer.Run`,
-alongside `reconcile.NewRunRunner`.
+reason — the claim is a conditional UPDATE and `FinishRun` is conditional on the run still
+being `RUNNING` under this attempt. `cmd/agent-worker` builds a `Handler` and hands
+`Handler.Handle` to `mq.Consumer.Run`, alongside `reconcile.NewRunRunner`.
 
 ## Gotchas
 
@@ -40,7 +40,10 @@ alongside `reconcile.NewRunRunner`.
   work that is done or in hand — and a `run.started` for it would tell a browser to clear a
   timeline that is correct.
 - **`run.finished` is published only when `FinishRun` reports that it wrote the row.**
-  `false` means another attempt already finished this run and published its own.
+  `false` means the run is no longer this attempt's — another attempt finished it, or the
+  lease expired and a later claim took it over — so the outcome computed here describes
+  superseded work and is discarded with a warning. The attempt number comes from the
+  `GetRun` after the claim and is part of `FinishRun`'s condition.
 - **The run's context gets no deadline.** `MaxRunDuration` is wall-clock and checked between
   steps (S7); as a deadline it would expire before the forced `finish`, which is the call
   that turns a bound into a diagnosis. What bounds the damage instead is `RUN_LEASE`.

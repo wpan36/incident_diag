@@ -58,6 +58,12 @@ pool settings, and `httpx` to classify what it returns.
   `DeleteRunSteps` the worker called afterwards would move half a state transition out of
   this layer and open a window where a `RUNNING` run renders the previous attempt's
   timeline as its own. A refused claim deletes nothing.
+- **`FinishRun` is conditional on the attempt as well as the status.** The caller passes the
+  `attempts` value its own claim wrote. Checking `RUNNING` alone would let an attempt the
+  lease had already superseded terminate a run the *next* attempt is still working on —
+  recording the wrong counters and releasing `uniq_active_run` underneath a live worker. The
+  lease is sized so that cannot normally happen (`config.LoadAgentWorker`), but that sizing
+  is an estimate and this predicate is a guarantee.
 - **`ListRunsToReconcile` has two categories where the documents one has three**, and it
   puts the attempt limit in the abandoned query rather than a retryable one. A `FAILED` run
   is never a candidate: `ClaimRun` refuses one, so a re-enqueued message would be rejected

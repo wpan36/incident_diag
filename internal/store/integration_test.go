@@ -452,7 +452,7 @@ func TestOneActiveRunPerIncident(t *testing.T) {
 	if claimed, err := s.ClaimRun(ctx, first.ID, testLease); err != nil || !claimed {
 		t.Fatalf("claiming the first run: claimed=%v err=%v", claimed, err)
 	}
-	if ok, err := s.FinishRun(ctx, first.ID, RunOutcome{Status: RunSucceeded, StopReason: StopCompleted}); err != nil || !ok {
+	if ok, err := s.FinishRun(ctx, first.ID, 1, RunOutcome{Status: RunSucceeded, StopReason: StopCompleted}); err != nil || !ok {
 		t.Fatalf("finishing the first run: ok=%v err=%v", ok, err)
 	}
 	if _, err := s.CreateRun(ctx, NewRun{IncidentID: inc.ID, Model: "deepseek-chat"}); err != nil {
@@ -470,14 +470,14 @@ func TestRunClaimAndFinishAreIdempotent(t *testing.T) {
 	}
 
 	result := json.RawMessage(`{"probable_root_cause":"connection pool exhaustion"}`)
-	ok, err := s.FinishRun(ctx, r.ID, RunOutcome{
+	ok, err := s.FinishRun(ctx, r.ID, 1, RunOutcome{
 		Status: RunSucceeded, StopReason: StopMaxSteps, FinalResult: result,
 		StepCount: 12, ToolCallCount: 7, PromptTokens: 18000, CompletionTokens: 900,
 	})
 	if err != nil || !ok {
 		t.Fatalf("finishing: ok=%v err=%v", ok, err)
 	}
-	if ok, err := s.FinishRun(ctx, r.ID, RunOutcome{Status: RunFailed, StopReason: StopError, Error: "late"}); err != nil || ok {
+	if ok, err := s.FinishRun(ctx, r.ID, 1, RunOutcome{Status: RunFailed, StopReason: StopError, Error: "late"}); err != nil || ok {
 		t.Fatalf("a late duplicate overwrote a finished run: ok=%v err=%v", ok, err)
 	}
 
@@ -497,6 +497,62 @@ func TestRunClaimAndFinishAreIdempotent(t *testing.T) {
 	}
 	if after.Error != nil {
 		t.Errorf("error = %q, want NULL on a successful run", *after.Error)
+	}
+}
+
+// TestASupersededAttemptCannotFinishAReclaimedRun is why FinishRun checks the
+// attempt and not only the status.
+//
+// A worker still alive past its lease is reclaimed by the sweep. The next
+// attempt leaves the run RUNNING, so a status-only condition would let the
+// first one's terminal write land — ending a run that is still producing
+// steps, recording the wrong attempt's counters, and releasing
+// uniq_active_run underneath a worker that is still using it.
+func TestASupersededAttemptCannotFinishAReclaimedRun(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	r := mustRunningRun(t, s, mustIncident(t, s).ID)
+
+	// The lease expires while the first attempt is still working, and the
+	// sweep reclaims the run.
+	backdateRun(t, s, r.ID, 2*testLease)
+	if claimed, err := s.ClaimRun(ctx, r.ID, testLease); err != nil || !claimed {
+		t.Fatalf("reclaiming the run: claimed=%v err=%v", claimed, err)
+	}
+
+	// The first attempt now finishes, believing the run is still its own.
+	ok, err := s.FinishRun(ctx, r.ID, 1, RunOutcome{
+		Status: RunFailed, StopReason: StopError, Error: "the first attempt's outcome",
+	})
+	if err != nil {
+		t.Fatalf("the superseded attempt's FinishRun: %v", err)
+	}
+	if ok {
+		t.Error("a superseded attempt terminated a run another attempt owns")
+	}
+
+	mid, err := s.GetRun(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("reading the run: %v", err)
+	}
+	if mid.Status != RunRunning || mid.FinishedAt != nil {
+		t.Errorf("run = %s finished_at=%v, want it still RUNNING for the second attempt",
+			mid.Status, mid.FinishedAt)
+	}
+
+	// The attempt that actually owns the run still finishes normally.
+	if ok, err := s.FinishRun(ctx, r.ID, 2, RunOutcome{
+		Status: RunSucceeded, StopReason: StopCompleted, StepCount: 4,
+	}); err != nil || !ok {
+		t.Fatalf("the owning attempt's FinishRun: ok=%v err=%v", ok, err)
+	}
+	after, err := s.GetRun(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("reading the run: %v", err)
+	}
+	if after.Status != RunSucceeded || after.StepCount != 4 {
+		t.Errorf("run = %s with %d steps, want SUCCEEDED with the second attempt's 4",
+			after.Status, after.StepCount)
 	}
 }
 
@@ -1115,7 +1171,7 @@ func TestListRunsToReconcileFindsBothCategories(t *testing.T) {
 	// A failed run is never a candidate: ClaimRun refuses one, so a message
 	// for it would be rejected forever and attempts would never increase.
 	failed := mustRunningRun(t, s, mustIncident(t, s).ID)
-	if _, err := s.FinishRun(ctx, failed.ID, RunOutcome{Status: RunFailed, StopReason: StopError,
+	if _, err := s.FinishRun(ctx, failed.ID, 1, RunOutcome{Status: RunFailed, StopReason: StopError,
 		Error: "the model could not be called"}); err != nil {
 		t.Fatalf("failing a run: %v", err)
 	}

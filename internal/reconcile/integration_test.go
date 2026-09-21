@@ -432,7 +432,7 @@ func TestRunSweepNeverRetriesAFailedRun(t *testing.T) {
 	if claimed, err := st.ClaimRun(ctx, failed.ID, 15*time.Minute); err != nil || !claimed {
 		t.Fatalf("claiming: claimed=%v err=%v", claimed, err)
 	}
-	if _, err := st.FinishRun(ctx, failed.ID, store.RunOutcome{
+	if _, err := st.FinishRun(ctx, failed.ID, 1, store.RunOutcome{
 		Status: store.RunFailed, StopReason: store.StopError, Error: "the model could not be called",
 	}); err != nil {
 		t.Fatalf("failing the run: %v", err)

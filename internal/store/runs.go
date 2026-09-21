@@ -252,20 +252,29 @@ func (s *Store) ClaimRun(ctx context.Context, runID string, lease time.Duration)
 	return true, nil
 }
 
-// FinishRun writes the terminal state of a run, conditional on RUNNING so a
-// late duplicate cannot overwrite a finished row.
-func (s *Store) FinishRun(ctx context.Context, runID string, out RunOutcome) (bool, error) {
+// FinishRun writes the terminal state of a run, conditional on RUNNING and on
+// attempt being the claim that is writing, so neither a late duplicate nor a
+// superseded attempt can overwrite the row.
+//
+// attempt is what ClaimRun wrote, which the caller reads back with GetRun.
+// Checking the status alone would not be enough: if the lease expires while an
+// attempt is still alive, the sweep reclaims the run, the next attempt leaves
+// it RUNNING, and the first one's terminal write would then land on work it no
+// longer owns — terminating a run that is still producing steps and releasing
+// uniq_active_run underneath it. With the attempt in the predicate, false
+// means "this run is no longer mine", which covers both cases.
+func (s *Store) FinishRun(ctx context.Context, runID string, attempt int, out RunOutcome) (bool, error) {
 	const q = `UPDATE agent_runs
 	              SET status = ?, stop_reason = ?, final_result = ?, error = ?,
 	                  step_count = ?, tool_call_count = ?,
 	                  prompt_tokens = ?, completion_tokens = ?,
 	                  finished_at = ?, updated_at = ?
-	            WHERE id = ? AND status = ?`
+	            WHERE id = ? AND status = ? AND attempts = ?`
 	t := now()
 	res, err := s.db.ExecContext(ctx, q,
 		out.Status, nullString(out.StopReason), nullJSON(out.FinalResult), nullString(out.Error),
 		out.StepCount, out.ToolCallCount, out.PromptTokens, out.CompletionTokens,
-		t, t, runID, RunRunning)
+		t, t, runID, RunRunning, attempt)
 	if err != nil {
 		return false, dbError(err, "finish agent run")
 	}

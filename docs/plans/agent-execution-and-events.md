@@ -70,9 +70,16 @@ error.
 context rather than replacing it). Without one, an unresponsive Redis would block a run
 inside the call whose whole point is that its failure does not matter.
 
-`run.finished` is published only when `FinishRun` reports that it wrote the row. A `false`
-return means another attempt already finished this run, and its `run.finished` was published
-then.
+`run.finished` is published only when `FinishRun` reports that it wrote the row.
+
+**`FinishRun` is conditional on the attempt, not only on `RUNNING`.** It takes the
+`attempts` value the worker's own claim wrote, read back by the `GetRun` below. Checking the
+status alone would let an attempt the lease had already superseded write the terminal row:
+the next attempt leaves the run `RUNNING`, so the first one's write would land, ending a run
+that is still producing steps, recording the wrong attempt's counters, and releasing
+`uniq_active_run` underneath a worker still using it. With the attempt in the predicate,
+`false` means "this run is no longer mine" — another attempt finished it, or a later claim
+took it over — and the outcome is discarded with a warning rather than published.
 
 **The worker re-reads the run to build `run.started` and `run.finished`.** `ClaimRun` and
 `FinishRun` return `(bool, error)` and not the row — a convention `internal/store` calls
@@ -209,7 +216,7 @@ consume agent.runs.v1
   trim the run's event stream
   publish run.started
   agent.Run, with ReportStep writing the row then publishing
-  FinishRun with the outcome
+  FinishRun with the outcome, conditional on this attempt
   re-read the run; publish run.finished
 ```
 
@@ -363,6 +370,15 @@ is `5m < 13m10s < 14m10s < 15m`. Fifty seconds of headroom is thin, and delibera
 raising `EMBED_MAX_RETRIES` or `LLM_TIMEOUT` should fail at startup with a message naming
 the lease, not reclaim live runs in production.
 
+**`worstCase` does not count the MySQL writes.** `ReportStep` writes its rows on the run's
+context, which carries no deadline on purpose, so a single row-lock wait —
+`innodb_lock_wait_timeout` is fifty seconds by default — can consume the whole headroom
+above. The formula bounds the calls this project configures timeouts for and nothing else,
+which makes the lease a well-sized estimate rather than a proof. Adding a deadline around
+those writes would buy a number that has to be kept in sync with the same arithmetic; making
+`FinishRun` conditional on the attempt costs a `WHERE` clause and makes an overrun harmless
+instead, which is why it is the one that was done.
+
 **The Redis client is `github.com/redis/go-redis/v9`**, the maintained client, with
 `redis.ParseURL` reading `REDIS_URL` so the connection string is one variable rather than a
 host, a port and a password. `rueidis` is faster and irrelevant at this volume.
@@ -471,7 +487,8 @@ its transaction. `internal/config` gains `LoadAgentWorker` and `SEARCH_TIMEOUT` 
   the new attempt's entry ids sort after the old ones; a second `POST` while one is in flight
   is 409 and one against a missing incident is 404, as is a listing for one;
   `GET /api/runs/{id}` renders a full timeline; the run sweep re-enqueues a stale `RUNNING`
-  run and ignores a fresh one.
+  run and ignores a fresh one; an attempt the lease has superseded cannot finish the run,
+  and the attempt that owns it still can.
 - End to end: file an incident, start a run, and watch the rows and the stream fill.
 
 ## Known limitations, accepted
@@ -495,6 +512,13 @@ claims, so a run that has never been reclaimed reads 1.
 
 **A `RUNNING` run reports zero steps and zero tokens.** Only `FinishRun` writes the
 counters. The timeline is the live record; the row catches up at the end.
+
+**A superseded attempt's whole investigation is thrown away.** If the lease expires while a
+worker is still running — which `worstCase` makes unlikely and does not make impossible —
+the reclaimed run belongs to the next attempt, and the first one's outcome is discarded with
+a warning. That is the correct trade: its step rows have already been deleted by the reclaim,
+so there is nothing left for its counters to describe. The alternative, letting it write
+anyway, is the corruption this predicate exists to prevent.
 
 **Nothing enforces that the API and the worker read the same configuration.** The budget
 travels on the row, but `agent_runs.model` records what the API believed while the worker

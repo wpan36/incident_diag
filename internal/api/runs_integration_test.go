@@ -220,7 +220,7 @@ func TestGetRunRendersAWholeTimeline(t *testing.T) {
 		}
 	}
 
-	if _, err := st.FinishRun(ctx, created.ID, store.RunOutcome{
+	if _, err := st.FinishRun(ctx, created.ID, 1, store.RunOutcome{
 		Status: store.RunSucceeded, StopReason: store.StopCompleted,
 		FinalResult: json.RawMessage(`{"root_cause":"the pool is saturated"}`),
 		StepCount:   3, ToolCallCount: 1, PromptTokens: 4200, CompletionTokens: 310,
@@ -299,7 +299,7 @@ func TestListingAnIncidentsRuns(t *testing.T) {
 		if claimed, err := st.ClaimRun(t.Context(), run.ID, testRunLease); err != nil || !claimed {
 			t.Fatalf("claiming: claimed=%v err=%v", claimed, err)
 		}
-		if _, err := st.FinishRun(t.Context(), run.ID, store.RunOutcome{
+		if _, err := st.FinishRun(t.Context(), run.ID, 1, store.RunOutcome{
 			Status: store.RunSucceeded, StopReason: store.StopCompleted,
 		}); err != nil {
 			t.Fatalf("finishing: %v", err)

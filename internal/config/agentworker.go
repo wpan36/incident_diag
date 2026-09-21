@@ -69,6 +69,13 @@ type AgentWorker struct {
 // classifies as a bug, not a conflict, so the run ends FAILED with a 500 in
 // the log.
 //
+// What the figure does not count: the MySQL writes agentrun.ReportStep makes
+// after each step. They run on the run's context, which carries no deadline on
+// purpose, so a row-lock wait alone can consume the headroom below. The lease
+// is therefore a well-sized estimate and not a proof, which is why FinishRun
+// is conditional on the attempt as well as the status — an overrun then costs
+// a discarded outcome rather than a corrupted row.
+//
 // The formula spans four loaders, so this one takes their results as
 // arguments rather than re-reading their variables. The ordering it enforces
 // is AGENT_MAX_RUN_DURATION < worstCase < rebalance timeout < RUN_LEASE, which

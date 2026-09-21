@@ -10,7 +10,8 @@
 // The frame around the work — decode, claim, terminal write — mirrors
 // internal/ingest exactly, and for the same reason: the claim is a conditional
 // UPDATE, so a redelivery finds the work already taken, and FinishRun is
-// conditional on RUNNING, so a late duplicate cannot overwrite a finished row.
+// conditional on the run still being RUNNING under this attempt, so neither a
+// late duplicate nor an attempt the lease has superseded can overwrite the row.
 //
 // One rule runs through all of it, from ADR 0001: the MySQL row is written
 // before its event is published, and a failed publish is logged and ignored.
@@ -185,25 +186,36 @@ func (h *Handler) investigate(ctx context.Context, runID string) error {
 		return nil
 	}
 
-	return h.finish(ctx, runID, outcome, started)
+	return h.finish(ctx, runID, run.Attempts, outcome, started)
 }
 
 // finish writes the terminal row and publishes run.finished.
-func (h *Handler) finish(ctx context.Context, runID string, out store.RunOutcome, started time.Time) error {
+//
+// attempt is the claim this handler is working under, read back from the row
+// after ClaimRun. It is part of FinishRun's condition so that an attempt the
+// lease has already superseded cannot terminate a run another worker is still
+// running.
+func (h *Handler) finish(ctx context.Context, runID string, attempt int,
+	out store.RunOutcome, started time.Time) error {
+
 	// Detached from the consumer's context for the reason terminalTimeout
 	// states. It is not detached from a cancelled run: that path returns above
 	// without reaching here.
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalTimeout)
 	defer cancel()
 
-	written, err := h.deps.Store.FinishRun(writeCtx, runID, out)
+	written, err := h.deps.Store.FinishRun(writeCtx, runID, attempt, out)
 	if err != nil {
 		return fmt.Errorf("finish run %s: %w", runID, err)
 	}
 	if !written {
-		// Per the store's contract, false means another attempt already
-		// finished this run — and published its own run.finished then.
-		h.deps.Logger.DebugContext(ctx, "run was already finished by another attempt")
+		// Per the store's contract, false means the run is no longer this
+		// attempt's: either another attempt already finished it, or the lease
+		// expired and a later claim took it over while this one was working.
+		// Either way the outcome computed here describes work someone else has
+		// superseded, so nothing is written and nothing is published.
+		h.deps.Logger.WarnContext(ctx, "run is no longer this attempt's; its outcome is discarded",
+			"attempt", attempt, "status", out.Status, "stop_reason", out.StopReason)
 		return nil
 	}
 
