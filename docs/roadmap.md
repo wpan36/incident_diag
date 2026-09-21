@@ -45,7 +45,7 @@ topic. Baseline and what the numbers do and do not mean: `docs/rag-eval.md`.
 
 | | Milestone | Status |
 | --- | --- | --- |
-| **S6** | **Spec: `mcp-tool-boundary`** — tool interfaces, read-only guarantees, the allowlist model, and the structured log format `read_service_logs` consumes. **Written here, one phase ahead of the milestones it gates**, because M13 emits that log format and M19 reads it; defining it once, before either exists, is why it moved | todo |
+| **S6** | **Spec: `mcp-tool-boundary`** — tool interfaces, read-only guarantees, the allowlist model, and the structured log format `read_service_logs` consumes. **Written here, one phase ahead of the milestones it gates**, because M13 emits that log format and M19 reads it; defining it once, before either exists, is why it moved | **done** |
 | M13 | `checkout-service` → `payment-service`, each with a business endpoint, `/health`, `/metrics`, and `/fault` injecting latency, 5xx and CPU load; structured JSON logs to a mounted directory, in the format S6 defines (Tier B) | todo |
 | M14 | Prometheus scraping both services; Grafana with a provisioned datasource (Tier B) | todo |
 | M15 | Fault scenarios: a script reproducing the payment-service latency incident and the other injectable faults, against the corpus M12 already wrote (Tier B) | todo |
