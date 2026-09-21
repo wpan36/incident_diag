@@ -70,7 +70,7 @@ Specified by S6, which is written at the top of Phase C.
 | M17 | `prometheus_query` (Tier B): instant and range queries, validation, LLM-friendly result summarization | **done** |
 | M18 | `http_probe` (Tier B): strict host allowlist, forced timeout, truncated body | **done** |
 | M19 | `read_service_logs` (Tier B): reads the log format S6 defines; takes a service name rather than a path, so there is no traversal to defend against; filters by time window, minimum level and substring | **done** |
-| M20 | MCP client and tool adapter in the main application; unit tested against a fake MCP server | **done** |
+| M20 | MCP client and tool adapter in the main application, tested against a real `ops-mcp` rather than a fake, so both halves of the result envelope are exercised | **done** |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 

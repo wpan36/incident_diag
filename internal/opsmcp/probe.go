@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/wpan36/incident_diag/internal/summary"
 )
 
 // HTTPProbeArgs is the tool's input.
@@ -58,7 +60,11 @@ func (s *Server) httpProbe(ctx context.Context, _ *mcp.CallToolRequest, in HTTPP
 	}
 	defer res.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(res.Body, int64(s.cfg.ProbeBodyBytes)))
+	// One byte past the cap, so a body that exactly fills it can be told apart
+	// from one that was cut. A body that ends mid-sentence with nothing saying
+	// so reads to the model like a service returning malformed output.
+	raw, _ := io.ReadAll(io.LimitReader(res.Body, int64(s.cfg.ProbeBodyBytes)+1))
+	body, _, bodyTruncated := summary.CapAt(string(raw), s.cfg.ProbeBodyBytes)
 
 	// A 5xx is a successful probe: the tool did its job and the answer is that
 	// the service is failing, which is exactly what the agent wanted to learn.
@@ -71,6 +77,9 @@ func (s *Server) httpProbe(ctx context.Context, _ *mcp.CallToolRequest, in HTTPP
 		// Reported rather than followed, so the agent sees the redirect instead
 		// of a body from wherever it pointed.
 		fmt.Fprintf(&b, "location %s (not followed)\n", location)
+	}
+	if bodyTruncated {
+		fmt.Fprintf(&b, "body truncated to the first %d bytes\n", s.cfg.ProbeBodyBytes)
 	}
 	if len(body) > 0 {
 		fmt.Fprintf(&b, "\n%s", body)

@@ -2,9 +2,12 @@ package opsmcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,8 +25,13 @@ const defaultLogLimit = 200
 var levels = map[string]int{"DEBUG": 0, "INFO": 1, "WARN": 2, "ERROR": 3}
 
 // maxLogLineBytes bounds one line. A log file with a corrupt tail could
-// otherwise present a single unterminated "line" the size of the disk.
+// otherwise present a single unterminated "line" the size of the disk. A line
+// over the bound is counted as unparseable, not fatal — see readLine.
 const maxLogLineBytes = 1 << 20
+
+// readBufferBytes is the reader's window. Lines longer than this still read
+// correctly, in several passes.
+const readBufferBytes = 64 << 10
 
 // ReadServiceLogsArgs is the tool's input.
 type ReadServiceLogsArgs struct {
@@ -46,6 +54,12 @@ func (s *Server) readServiceLogs(ctx context.Context, _ *mcp.CallToolRequest, in
 		res, meta := refused("%s", refusal)
 		return res, meta, nil
 	}
+
+	// The other two tools bound their dependency; this one bounds its own work.
+	// The file is read from the start every call and grows without rotation, so
+	// the scan is what can run long here.
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.LogTimeout)
+	defer cancel()
 
 	// filepath.Join of the root and a name that is a key of the configured
 	// list. The name never came from the caller as a path, so there is nothing
@@ -139,47 +153,86 @@ type record struct {
 //
 // The whole file, because there is no rotation and no index: this is a lab, and
 // the alternative is the file-discovery problem the no-paths decision exists to
-// avoid. The ring below means memory stays bounded by limit however large the
-// file grows.
-func scanLog(ctx context.Context, r interface{ Read([]byte) (int, error) }, f logFilter) (kept []record, matched, unparseable int, err error) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), maxLogLineBytes)
+// avoid. The sliding window below means memory stays bounded by limit however
+// large the file grows.
+func scanLog(ctx context.Context, r io.Reader, f logFilter) (kept []record, matched, unparseable int, err error) {
+	br := bufio.NewReaderSize(r, readBufferBytes)
 
-	lines := 0
-	for sc.Scan() {
+	for lines := 0; ; lines++ {
 		// Checked periodically rather than per line: a cancelled call should
 		// stop, but a syscall-free check on every line of a large file is
 		// measurable.
-		if lines++; lines%1000 == 0 {
+		if lines%1000 == 0 && lines > 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, 0, 0, err
 			}
 		}
 
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		rec, ok := parseRecord(line)
-		if !ok {
+		line, tooLong, err := readLine(br)
+		switch {
+		case tooLong:
 			unparseable++
-			continue
+		case len(line) == 0:
+		default:
+			rec, parsed := parseRecord(line)
+			switch {
+			case !parsed:
+				unparseable++
+			case f.matches(rec, line):
+				matched++
+				kept = append(kept, rec)
+				if len(kept) > f.limit {
+					// Keep the tail: debugging wants the most recent records,
+					// and this bounds memory by limit rather than by file size.
+					kept = kept[1:]
+				}
+			}
 		}
-		if !f.matches(rec, line) {
-			continue
-		}
-		matched++
-		kept = append(kept, rec)
-		if len(kept) > f.limit {
-			// Keep the tail: debugging wants the most recent records, and this
-			// bounds memory by limit rather than by file size.
-			kept = kept[1:]
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return kept, matched, unparseable, nil
+			}
+			return nil, 0, 0, err
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return nil, 0, 0, err
+}
+
+// readLine returns the next line with its terminator removed, reporting a line
+// longer than maxLogLineBytes instead of returning it.
+//
+// It is hand-rolled rather than a bufio.Scanner because a Scanner cannot
+// continue past a line longer than its buffer: one corrupt line would cost
+// every record in the file, and with no rotation that service's log would stay
+// unreadable. An over-long line is discarded and counted like any other line
+// that could not be parsed.
+func readLine(br *bufio.Reader) (line []byte, tooLong bool, err error) {
+	chunk, err := br.ReadSlice('\n')
+	if !errors.Is(err, bufio.ErrBufferFull) {
+		// The whole line fit, which is every line in a healthy file. No copy.
+		return trimEOL(chunk), false, err
 	}
-	return kept, matched, unparseable, nil
+
+	buf := append([]byte(nil), chunk...)
+	for {
+		chunk, err = br.ReadSlice('\n')
+		if len(buf)+len(chunk) > maxLogLineBytes {
+			tooLong = true
+		} else {
+			buf = append(buf, chunk...)
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if tooLong {
+			return nil, true, err
+		}
+		return trimEOL(buf), false, err
+	}
+}
+
+func trimEOL(line []byte) []byte {
+	return bytes.TrimRight(line, "\r\n")
 }
 
 func (f logFilter) matches(rec record, raw []byte) bool {
@@ -271,11 +324,16 @@ func sortedKeys(m map[string]any) []string {
 	return out
 }
 
-func levelNames() string {
+// levelNamesOrdered lists the levels from least to most severe. Both the
+// refusal message and the tool's schema enum are built from it, so the two
+// cannot come to disagree about which levels exist.
+func levelNamesOrdered() []string {
 	names := make([]string, 0, len(levels))
 	for name := range levels {
 		names = append(names, name)
 	}
 	sort.Slice(names, func(i, j int) bool { return levels[names[i]] < levels[names[j]] })
-	return strings.Join(names, ", ")
+	return names
 }
+
+func levelNames() string { return strings.Join(levelNamesOrdered(), ", ") }

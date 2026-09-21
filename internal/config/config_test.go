@@ -607,7 +607,7 @@ func isolateOpsMCP(t *testing.T) {
 		"OPS_MCP_PROMETHEUS_URL", "OPS_MCP_PROBE_TARGETS", "OPS_MCP_LOG_ROOT",
 		"OPS_MCP_LOG_SERVICES", "OPS_MCP_PROMETHEUS_TIMEOUT", "OPS_MCP_MAX_RANGE",
 		"OPS_MCP_MIN_STEP", "OPS_MCP_MAX_SERIES", "OPS_MCP_PROBE_TIMEOUT",
-		"OPS_MCP_PROBE_BODY_BYTES", "OPS_MCP_MAX_LOG_LINES",
+		"OPS_MCP_PROBE_BODY_BYTES", "OPS_MCP_LOG_TIMEOUT", "OPS_MCP_MAX_LOG_LINES",
 	} {
 		t.Setenv(k, "")
 	}
@@ -697,6 +697,7 @@ func TestLoadOpsMCPRejectsNonPositiveLimits(t *testing.T) {
 	}
 	for _, key := range []string{
 		"OPS_MCP_PROMETHEUS_TIMEOUT", "OPS_MCP_MAX_RANGE", "OPS_MCP_MIN_STEP", "OPS_MCP_PROBE_TIMEOUT",
+		"OPS_MCP_LOG_TIMEOUT",
 	} {
 		validOpsMCP(t)
 		t.Setenv(key, "0s")

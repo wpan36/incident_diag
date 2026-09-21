@@ -39,6 +39,7 @@ type OpsMCP struct {
 	MaxSeries         int
 	ProbeTimeout      time.Duration
 	ProbeBodyBytes    int
+	LogTimeout        time.Duration
 	MaxLogLines       int
 }
 
@@ -51,6 +52,7 @@ const (
 	defaultMaxSeries         = 50
 	defaultProbeTimeout      = 5 * time.Second
 	defaultProbeBodyBytes    = 2 << 10
+	defaultLogTimeout        = 10 * time.Second
 	defaultMaxLogLines       = 1000
 )
 
@@ -69,6 +71,7 @@ func LoadOpsMCP() (OpsMCP, error) {
 		MaxSeries:         e.optionalInt("OPS_MCP_MAX_SERIES", defaultMaxSeries),
 		ProbeTimeout:      e.optionalDuration("OPS_MCP_PROBE_TIMEOUT", defaultProbeTimeout),
 		ProbeBodyBytes:    e.optionalInt("OPS_MCP_PROBE_BODY_BYTES", defaultProbeBodyBytes),
+		LogTimeout:        e.optionalDuration("OPS_MCP_LOG_TIMEOUT", defaultLogTimeout),
 		MaxLogLines:       e.optionalInt("OPS_MCP_MAX_LOG_LINES", defaultMaxLogLines),
 	}
 	c.ProbeTargets = parseTargets(&e, "OPS_MCP_PROBE_TARGETS", e.requiredString("OPS_MCP_PROBE_TARGETS"))
@@ -105,6 +108,7 @@ func LoadOpsMCP() (OpsMCP, error) {
 		{"OPS_MCP_MAX_RANGE", c.MaxRange},
 		{"OPS_MCP_MIN_STEP", c.MinStep},
 		{"OPS_MCP_PROBE_TIMEOUT", c.ProbeTimeout},
+		{"OPS_MCP_LOG_TIMEOUT", c.LogTimeout},
 	} {
 		if d.v <= 0 {
 			e.fail("%s must be greater than zero", d.key)
@@ -178,8 +182,9 @@ func (c OpsMCP) String() string {
 	}
 	sort.Strings(names)
 	return fmt.Sprintf("prometheus=%s probe_targets=%s log_root=%s log_services=%s "+
-		"max_range=%s min_step=%s max_series=%d probe_timeout=%s max_log_lines=%d",
+		"max_range=%s min_step=%s max_series=%d probe_timeout=%s log_timeout=%s "+
+		"max_log_lines=%d",
 		c.PrometheusURL, strings.Join(names, ","), c.LogRoot,
 		strings.Join(c.LogServices, ","), c.MaxRange, c.MinStep, c.MaxSeries,
-		c.ProbeTimeout, c.MaxLogLines)
+		c.ProbeTimeout, c.LogTimeout, c.MaxLogLines)
 }

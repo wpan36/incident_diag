@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -101,6 +102,40 @@ func TestConnectDiscoversTheTools(t *testing.T) {
 			t.Errorf("the server did not expose %s", want)
 		}
 	}
+}
+
+func TestMinLevelSchemaCarriesAnEnum(t *testing.T) {
+	c := connected(t, baseConfig(t))
+
+	for _, tool := range c.Tools() {
+		if tool.Name != "read_service_logs" {
+			continue
+		}
+		var schema struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
+			t.Fatalf("unmarshalling the schema: %v", err)
+		}
+		// A description is advice; an enum is a constraint the provider can
+		// enforce before the call is made, which saves the agent a tool call
+		// spent being told the value was wrong.
+		got := schema.Properties["min_level"].Enum
+		want := []string{"DEBUG", "INFO", "WARN", "ERROR"}
+		if len(got) != len(want) {
+			t.Fatalf("min_level enum = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("min_level enum = %v, want %v", got, want)
+				break
+			}
+		}
+		return
+	}
+	t.Fatal("the server did not expose read_service_logs")
 }
 
 func TestUnknownServiceIsRefusedNotAnError(t *testing.T) {
@@ -223,5 +258,95 @@ func TestCallingAnUnknownToolIsAnError(t *testing.T) {
 	// means the caller is broken, not that the investigation learned something.
 	if _, err := c.Call(context.Background(), "rm_minus_rf", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("calling an unknown tool succeeded")
+	}
+}
+
+func TestMalformedArgumentsAreRefusedNotReportedAsBroken(t *testing.T) {
+	c := connected(t, baseConfig(t))
+
+	// These never reach a tool: the SDK rejects them against the tool's schema
+	// and answers isError with no meta envelope. ops-mcp puts an envelope on
+	// everything it produces itself, so that combination can only mean the
+	// arguments were malformed — which is the model's to fix.
+	cases := []struct {
+		tool string
+		args map[string]any
+	}{
+		{"http_probe", map[string]any{}}, // required service missing
+		{"read_service_logs", map[string]any{"service": "payment-service", "limit": "200"}}, // wrong type
+	}
+	for _, tc := range cases {
+		res := call(t, c, tc.tool, tc.args)
+		if !res.Refused {
+			t.Errorf("%s %v: refused=false status=%s", tc.tool, tc.args, res.Status)
+		}
+		if res.Status == StatusError {
+			t.Errorf("%s %v: recorded as a broken dependency the agent should stop asking", tc.tool, tc.args)
+		}
+		if res.Note == "" {
+			t.Errorf("%s %v: no reason recorded", tc.tool, tc.args)
+		}
+	}
+}
+
+func TestAServerThatNeverAnswersIsATimeoutResult(t *testing.T) {
+	// The tool blocks inside ops-mcp for longer than this client waits, so the
+	// deadline that fires is the client's own. Without this path the likeliest
+	// timeout of all — ops-mcp hanging — could never be recorded as one.
+	hang := make(chan struct{})
+	blocked := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-hang
+	}))
+	defer blocked.Close()
+
+	cfg := baseConfig(t)
+	cfg.ProbeTargets = map[string]string{"payment-service": blocked.URL}
+	cfg.ProbeTimeout = time.Minute
+
+	srv := httptest.NewServer(opsmcp.New(cfg, log.Discard()).Handler())
+	defer srv.Close()
+
+	c, err := Connect(context.Background(), srv.URL+"/mcp", 300*time.Millisecond, log.Discard())
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Close()
+	// Registered last so it runs first: every Close above waits on the handler
+	// this releases, and the other order deadlocks the test rather than the
+	// code under test.
+	defer close(hang)
+
+	res := call(t, c, "http_probe", map[string]any{"service": "payment-service", "path": "/health"})
+	if res.Status != StatusTimeout {
+		t.Errorf("status = %s, want %s", res.Status, StatusTimeout)
+	}
+	if res.Refused {
+		t.Error("a hung server was reported as something the model could fix")
+	}
+	if !strings.Contains(res.Text, "did not answer") {
+		t.Errorf("text = %q", res.Text)
+	}
+}
+
+func TestACancelledCallerStillGetsAnError(t *testing.T) {
+	c := connected(t, baseConfig(t))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// The run is over. A tool result for it would be recorded against an
+	// investigation nobody is waiting on.
+	if _, err := c.Call(ctx, "read_service_logs", json.RawMessage(`{"service":"payment-service"}`)); err == nil {
+		t.Fatal("a cancelled caller got a result")
+	}
+}
+
+func TestStatusForAKindThisClientDoesNotKnow(t *testing.T) {
+	// Drift between the two halves of the envelope must not be recorded as
+	// evidence the agent can rely on.
+	if got := statusFor("partial"); got != StatusError {
+		t.Errorf("statusFor(partial) = %s, want %s", got, StatusError)
+	}
+	if got := statusFor("ok"); got != StatusOK {
+		t.Errorf("statusFor(ok) = %s", got)
 	}
 }

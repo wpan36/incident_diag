@@ -23,6 +23,9 @@ anything partly valid. The environment is the only source: Compose supplies `.en
   budget) and `LoadEmbedding`.
 - `search.go` — `Search` (Elasticsearch URL, index alias), `LoadSearch` and
   `DefaultIndexAlias`.
+- `opsmcp.go` — `OpsMCP` (Prometheus endpoint, probe targets, log root and services, and
+  the per-tool limits), `LoadOpsMCP`, `parseTargets` and `checkAbsoluteHTTP`. Everything
+  the agent can reach is in this one struct.
 - `lab.go` — `Checkout` and `Payment`, the two Incident Lab services' settings, plus
   `DefaultLabLogDir`. Their variable names come from the knowledge corpus rather than from
   this package's conventions, because the runbooks the agent retrieves name them.

@@ -47,7 +47,7 @@ to hide in.
 | `start`, `end`, `since`, `until` | RFC 3339, UTC | see below |
 | `step` | Go duration (`30s`, `1m`) | range ÷ 100, rounded up to the minimum step |
 | `path` | absolute path, constrained below | `/` |
-| `min_level` | `DEBUG` \| `INFO` \| `WARN` \| `ERROR` | `INFO` |
+| `min_level` | `DEBUG` \| `INFO` \| `WARN` \| `ERROR`, advertised as a schema `enum` | `INFO` |
 | `contains` | case-insensitive substring of the whole raw line | no filter |
 | `limit` | integer | 200, maximum 1000 |
 
@@ -59,6 +59,16 @@ range query when both are. Exactly one of them is a rejected argument, not a gue
 
 `read_service_logs` returns the **last** `limit` matching records — a tail is what
 debugging wants — rendered oldest first so the result reads as a timeline.
+
+Its window is **`[since, until)`**: a record at exactly `since` is included and one at
+exactly `until` is not, so adjacent windows tile without a record appearing in both. The
+tool's description says so, because a half-open interval the caller has to guess at is a
+silently wrong answer rather than a refusal.
+
+`min_level` is advertised as a JSON Schema `enum` rather than only described in prose. A
+description is advice; an enum is a constraint the provider can enforce before the call is
+made, and spending one of the agent's bounded tool calls being told the value was wrong is
+avoidable.
 
 ### `http_probe` joins a path, so the join is constrained
 
@@ -103,26 +113,35 @@ Plus per-tool counters: `series` and `points` for `prometheus_query`; `matched`,
 
 The text block is rendered per tool as:
 
-- **`prometheus_query`** — one line per series. Instant: the label set and the value.
-  Range: the label set, point count, min, max, mean and last, with the timestamps of the
-  min and the max, then up to 20 evenly spaced points. Raw JSON is never passed through.
+- **`prometheus_query`** — one line per series, rendered by the `resultType` in the reply
+  rather than by the shape of the request, since `up[5m]` is an instant query that returns
+  a matrix. Vector: the label set and the value. Matrix: the label set, point count, min,
+  max, mean and last, with the timestamps of the min and the max, then up to 20 evenly
+  spaced points. Scalar and string: the single value. Raw JSON is never passed through.
 - **`http_probe`** — status code, latency in milliseconds, `Content-Type`, and the body
-  truncated to 2 KiB. A 5xx is a **successful probe** (`kind: ok`); only a failure to get a
-  response is not.
+  truncated to 2 KiB, with the truncation stated in the text. A 5xx is a **successful
+  probe** (`kind: ok`); only a failure to get a response is not.
 - **`read_service_logs`** — one line per record as `time level msg key=value …`, which is
   cheaper in tokens than re-emitting JSON.
 
-The 8 KiB cap from S1 is applied once, in the server, to the rendered text. `ops-mcp` does
-not import `internal/store`, so the rune-safe truncation helper S1 describes lives in a
-small shared package both can use — one implementation, not two that must agree.
+The 8 KiB cap from S1 is applied once, in the server, to the rendered text — marker
+included, so the cap is the size of what leaves the server. `ops-mcp` does not import
+`internal/store`, so the rune-safe truncation helper S1 describes lives in a small shared
+package both can use — one implementation, not two that must agree.
 
 ### Errors the model cannot fix
 
-A dependency that does not answer — Prometheus unreachable or returning a non-400, a probe
-connection refused, a missing or unreadable log file — returns an MCP `isError` result with
-`meta.kind` set to `error`, or `timeout` when `ops-mcp`'s own deadline expired. These are
-the only cases where `isError` is set; everything the model could correct is an ordinary
-result, per the section above.
+A dependency that does not answer — a probe connection refused, a missing or unreadable log
+file, Prometheus unreachable — returns an MCP `isError` result with `meta.kind` set to
+`error`, or `timeout` when `ops-mcp`'s own deadline expired. These are the only cases where
+`isError` is set; everything the model could correct is an ordinary result, per the section
+above.
+
+Prometheus is classified by status code: `200`, `400` and `422` carry a query API response,
+so a rejected query is refused and the model can rewrite it. Any other status means this
+server is not talking to the query API at all — a wrong URL, an auth proxy — which is an
+error, because reporting it as a bad query would have the model rewrite a good one until
+its budget ran out.
 
 ### Resource limits
 
@@ -136,6 +155,7 @@ Prometheus is read-only, so the risk is an expensive query rather than an unsafe
 | Maximum series | 50 |
 | Probe timeout | 5s |
 | Probe body | 2 KiB |
+| Log read timeout | 10s |
 | Result cap | 8 KiB (S1) |
 
 Violations are **refused, not clamped**. Silently widening a step changes the numbers the
@@ -175,7 +195,8 @@ exists to avoid. The lab services write to `io.MultiWriter(os.Stdout, file)` so
 `read_service_logs` parses line by line and filters on time window, minimum level and
 substring. Time-window filtering is the capability the agent most needs — "the five minutes
 around when the alert fired" — and the one thing a text grep cannot do. Unparseable lines
-are counted and the count is reported in the result, never silently dropped.
+are counted and the count is reported in the result, never silently dropped — including a
+line over the length bound, which is skipped rather than ending the read.
 
 ### Configuration
 
@@ -188,6 +209,7 @@ OPS_MCP_PROMETHEUS_URL=http://prometheus:9090
 OPS_MCP_PROBE_TARGETS=checkout-service=http://checkout-service:8080,payment-service=http://payment-service:8080
 OPS_MCP_LOG_ROOT=/var/log/lab
 OPS_MCP_LOG_SERVICES=checkout-service,payment-service
+OPS_MCP_LOG_TIMEOUT=10s
 ```
 
 Limits are optional variables over the defaults tabled above. The log services are listed

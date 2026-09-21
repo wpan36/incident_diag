@@ -29,6 +29,17 @@ time and handed to the model unchanged, so adding a tool to `ops-mcp` needs no c
 - **`Call` returns an error only when the call itself failed.** A tool that ran and reported
   a problem is a `Result` with a non-OK status, because that is something the agent reasons
   about rather than something that should end its run.
+- **This client's own deadline is a `TIMEOUT` result, not an error.** Otherwise the
+  likeliest timeout of all — `ops-mcp` hanging — is the one that could never be recorded as
+  one. A caller that cancelled the run still gets an error: a tool result for a finished
+  run has nowhere to go.
+- **An `isError` carrying no meta means the arguments were malformed.** `ops-mcp` puts an
+  envelope on every result it produces, so that combination can only be the SDK rejecting
+  the call against the tool's schema — a missing `service`, a `limit` sent as a string —
+  which the model can fix. It is recorded as a refusal, not as a broken dependency.
+- **An unknown `kind` is recorded as `ERROR`.** If the two halves of the envelope have
+  drifted apart, a row nobody can explain beats a run that counted an unreadable result as
+  evidence.
 - **`Status` comes from structured content, never from the text.** The audit trail must not
   depend on parsing the prose the model reads.
 - **A result whose meta will not decode still reaches the model**, with a warning logged and

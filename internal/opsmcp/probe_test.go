@@ -1,11 +1,24 @@
 package opsmcp
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/wpan36/incident_diag/internal/config"
+	"github.com/wpan36/incident_diag/internal/log"
 )
 
 const probeBase = "http://payment-service:8080"
+
+// probeBodyBytes is the cap these tests configure, small enough to be readable
+// in a failure message.
+const probeBodyBytes = 64
 
 func TestJoinProbePathAccepts(t *testing.T) {
 	cases := map[string]string{
@@ -64,16 +77,60 @@ func TestJoinProbePathKeepsATraversalInsideTheHost(t *testing.T) {
 	}
 }
 
-func TestJoinProbePathRefusesABaseWithAPath(t *testing.T) {
-	// A base carrying its own path is a configuration mistake worth surfacing
-	// rather than silently resolving against.
+func TestJoinProbePathReplacesABasePath(t *testing.T) {
+	// An absolute reference replaces the base's path rather than being appended
+	// to it — ResolveReference's documented behaviour, and worth pinning because
+	// a configured base of ".../v1" does not prefix anything.
+	//
+	// Not a refusal: the host is what this function guards, and the host is
+	// unchanged.
 	got, err := joinProbePath("http://payment-service:8080/v1", "/health")
 	if err != nil {
 		t.Fatalf("joinProbePath: %v", err)
 	}
-	// ResolveReference replaces the base path with an absolute reference, which
-	// is the documented behaviour; the host is what this function guards.
 	if got != "http://payment-service:8080/health" {
-		t.Errorf("joinProbePath = %q", got)
+		t.Errorf("joinProbePath = %q, want the base path replaced", got)
+	}
+}
+
+func TestHTTPProbeReportsWhatItDidToTheBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/exact":
+			fmt.Fprint(w, strings.Repeat("a", probeBodyBytes))
+		case "/big":
+			fmt.Fprint(w, strings.Repeat("a", probeBodyBytes*4))
+		default:
+			fmt.Fprint(w, "ok")
+		}
+	}))
+	defer srv.Close()
+
+	s := New(config.OpsMCP{
+		ProbeTargets:   map[string]string{"svc": srv.URL},
+		ProbeTimeout:   5 * time.Second,
+		ProbeBodyBytes: probeBodyBytes,
+	}, log.Discard())
+
+	probe := func(path string) string {
+		t.Helper()
+		res, _, err := s.httpProbe(t.Context(), nil, HTTPProbeArgs{Service: "svc", Path: path})
+		if err != nil {
+			t.Fatalf("httpProbe: %v", err)
+		}
+		return res.Content[0].(*mcp.TextContent).Text
+	}
+
+	// A body that ends mid-stream with nothing saying so reads to the model
+	// like a service returning malformed output.
+	if got := probe("/big"); !strings.Contains(got, "body truncated to the first") {
+		t.Errorf("a truncated body was not announced: %q", got[:min(len(got), 200)])
+	}
+	// A body that exactly fills the cap was not cut and must not claim it was.
+	if got := probe("/exact"); strings.Contains(got, "truncated") {
+		t.Errorf("a body at exactly the cap was reported as truncated")
+	}
+	if got := probe("/small"); strings.Contains(got, "truncated") {
+		t.Errorf("a short body was reported as truncated")
 	}
 }

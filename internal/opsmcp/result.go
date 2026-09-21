@@ -52,16 +52,25 @@ type Meta struct {
 	UnparseableLines int `json:"unparseable_lines,omitempty"`
 }
 
+// truncationMarker tells the model the text stops short of the answer rather
+// than ending there. It counts against the cap: the 8 KiB is the size of what
+// leaves this server, not the size of the part before the note saying so.
+const truncationMarker = "\n\n[truncated]"
+
 // ok builds a successful result. The cap is applied here, once, so no tool can
 // forget it and no two tools can disagree about where it falls.
 func ok(text string, meta Meta) (*mcp.CallToolResult, Meta) {
 	capped, original, truncated := summary.Cap(text)
+	if truncated {
+		// Re-cut with room for the marker. Two passes only when it is needed,
+		// so text that fits is never trimmed to make space for a note it will
+		// not carry.
+		capped, _, _ = summary.CapAt(text, summary.LimitBytes-len(truncationMarker))
+		capped += truncationMarker
+	}
 	meta.Kind = KindOK
 	meta.OriginalBytes = original
 	meta.Truncated = truncated
-	if truncated {
-		capped += "\n\n[truncated]"
-	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: capped}}}, meta
 }
 

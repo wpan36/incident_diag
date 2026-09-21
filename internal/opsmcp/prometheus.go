@@ -24,6 +24,14 @@ import (
 // below are what a responder actually reads off a graph.
 const renderedPoints = 20
 
+// stepDivisor derives a range query's resolution from its span.
+//
+// A hundred points is enough shape to sample renderedPoints out of and enough
+// resolution that a spike lasting a twentieth of the window still appears.
+// Prometheus evaluates at the step, so a step that is too coarse does not blur
+// a spike, it deletes it.
+const stepDivisor = 100
+
 // PrometheusQueryArgs is the tool's input. The SDK derives the JSON schema from
 // this type, so the field tags are the tool's public contract.
 type PrometheusQueryArgs struct {
@@ -85,27 +93,34 @@ func (s *Server) prometheusQuery(ctx context.Context, _ *mcp.CallToolRequest, in
 		res, meta := refused("prometheus rejected the query: %s", firstNonEmpty(decoded.Error, decoded.ErrorType, "unknown error"))
 		return res, meta, nil
 	}
-	if n := len(decoded.Data.Result); n > s.cfg.MaxSeries {
+
+	result, err := decodeResult(decoded)
+	if err != nil {
+		res, meta := failed(KindError, "prometheus returned a body this server could not parse: %v", err)
+		return res, meta, nil
+	}
+	if n := len(result.series); n > s.cfg.MaxSeries {
 		res, meta := refused(
 			"the query matched %d series; this server returns at most %d, so narrow it with a label matcher or an aggregation",
 			n, s.cfg.MaxSeries)
 		return res, meta, nil
 	}
 
-	text, points := renderPrometheus(decoded, ranged)
-	res, meta := ok(text, Meta{Series: len(decoded.Data.Result), Points: points})
+	text, series, points := renderPrometheus(result)
+	res, meta := ok(text, Meta{Series: series, Points: points})
 	return res, meta, nil
 }
 
 // resolveStep validates an explicit step or derives one from the span.
 func (s *Server) resolveStep(raw string, span time.Duration) (time.Duration, error) {
 	if raw == "" {
-		// Enough points to see a shape, never finer than the minimum.
-		step := span / renderedPoints * 5
+		// Rounded to the second first, so the clamp below is the last word and
+		// the result is never under the minimum.
+		step := (span / stepDivisor).Round(time.Second)
 		if step < s.cfg.MinStep {
 			step = s.cfg.MinStep
 		}
-		return step.Round(time.Second), nil
+		return step, nil
 	}
 	step, err := time.ParseDuration(raw)
 	switch {
@@ -144,21 +159,66 @@ func (s *Server) getPrometheus(ctx context.Context, path string, form url.Values
 	if readErr != nil {
 		return nil, KindError, fmt.Errorf("reading the prometheus response: %w", readErr)
 	}
-	if res.StatusCode >= 500 {
-		return nil, KindError, fmt.Errorf("prometheus answered %s", res.Status)
+	// 400 and 422 carry a PromQL error in an API response body, and that is
+	// something the model can fix. Any other status means this server is not
+	// talking to the Prometheus query API at all — a wrong URL, an auth proxy
+	// in front of it — which it cannot. Reporting that as a rejected query
+	// would have the model rewrite a perfectly good query until its budget ran
+	// out.
+	switch res.StatusCode {
+	case http.StatusOK, http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return body, "", nil
 	}
-	return body, "", nil
+	return nil, KindError, fmt.Errorf("prometheus answered %s, which is not a query API response", res.Status)
 }
 
+// Prometheus result types. The reply says which one it is, and that — not the
+// shape of the request — decides how the payload decodes and renders. An
+// instant query over a range selector ("up[5m]") is a matrix, and reading it as
+// a vector yields a value that is not in the data.
+const (
+	typeVector = "vector"
+	typeMatrix = "matrix"
+	typeScalar = "scalar"
+	typeString = "string"
+)
+
 // promResponse is the part of Prometheus's reply this tool reads.
+//
+// Result stays raw until ResultType says what is in it: vector and matrix hold
+// a list of series, scalar and string hold a single sample.
 type promResponse struct {
 	Status    string `json:"status"`
 	ErrorType string `json:"errorType"`
 	Error     string `json:"error"`
 	Data      struct {
-		ResultType string       `json:"resultType"`
-		Result     []promSeries `json:"result"`
+		ResultType string          `json:"resultType"`
+		Result     json.RawMessage `json:"result"`
 	} `json:"data"`
+}
+
+// promResult is a decoded reply, in the terms the renderer works in.
+type promResult struct {
+	resultType string
+	series     []promSeries // vector and matrix
+	point      promPoint    // scalar and string
+}
+
+// decodeResult reads Data.Result according to Data.ResultType.
+func decodeResult(r promResponse) (promResult, error) {
+	out := promResult{resultType: r.Data.ResultType}
+	if len(r.Data.Result) == 0 {
+		return out, fmt.Errorf("the reply has no result for a %q query", r.Data.ResultType)
+	}
+	switch r.Data.ResultType {
+	case typeVector, typeMatrix:
+		err := json.Unmarshal(r.Data.Result, &out.series)
+		return out, err
+	case typeScalar, typeString:
+		err := json.Unmarshal(r.Data.Result, &out.point)
+		return out, err
+	}
+	return out, fmt.Errorf("unknown result type %q", r.Data.ResultType)
 }
 
 type promSeries struct {
@@ -168,9 +228,13 @@ type promSeries struct {
 }
 
 // promPoint is [unix_seconds, "value"], which is why it decodes by hand.
+//
+// Text is the second element as it arrived. A string result carries prose
+// there rather than a number, and formatting it as a float would print 0.
 type promPoint struct {
 	At    time.Time
 	Value float64
+	Text  string
 }
 
 func (p *promPoint) UnmarshalJSON(b []byte) error {
@@ -195,44 +259,56 @@ func (p *promPoint) UnmarshalJSON(b []byte) error {
 	f, _ := strconv.ParseFloat(value, 64)
 	p.At = time.Unix(int64(secs), int64((secs-math.Floor(secs))*1e9)).UTC()
 	p.Value = f
+	p.Text = value
 	return nil
 }
 
-// renderPrometheus turns the response into the text the model reads. Raw JSON
-// is never passed through: it is mostly punctuation, and the model has a
-// bounded context.
-func renderPrometheus(r promResponse, ranged bool) (string, int) {
-	var b strings.Builder
-	total := 0
-
-	if len(r.Data.Result) == 0 {
-		return "the query matched no series", 0
+// renderPrometheus turns the response into the text the model reads, and
+// reports the series and point counts for the meta envelope. Raw JSON is never
+// passed through: it is mostly punctuation, and the model has a bounded
+// context.
+//
+// Which branch runs is decided by the result type Prometheus reported, not by
+// whether the caller asked for a range. "up[5m]" is an instant query that
+// returns a matrix, and reading its series as single values would print a
+// number that is not in the data.
+func renderPrometheus(r promResult) (text string, series, points int) {
+	switch r.resultType {
+	case typeScalar:
+		return fmt.Sprintf("%s = %s", r.point.At.Format(timeLayout), formatValue(r.point.Value)), 1, 1
+	case typeString:
+		return fmt.Sprintf("%s = %q", r.point.At.Format(timeLayout), r.point.Text), 1, 1
 	}
 
-	for _, series := range r.Data.Result {
-		labels := renderLabels(series.Metric)
-		if !ranged {
-			fmt.Fprintf(&b, "%s = %s\n", labels, formatValue(series.Value.Value))
-			total++
+	if len(r.series) == 0 {
+		return "the query matched no series", 0, 0
+	}
+
+	var b strings.Builder
+	for _, s := range r.series {
+		labels := renderLabels(s.Metric)
+		if r.resultType == typeVector {
+			fmt.Fprintf(&b, "%s = %s\n", labels, formatValue(s.Value.Value))
+			points++
 			continue
 		}
 
-		if len(series.Values) == 0 {
+		if len(s.Values) == 0 {
 			fmt.Fprintf(&b, "%s: no points\n", labels)
 			continue
 		}
-		total += len(series.Values)
-		st := describe(series.Values)
+		points += len(s.Values)
+		st := describe(s.Values)
 		fmt.Fprintf(&b, "%s: %d points, min %s at %s, max %s at %s, mean %s, last %s\n",
-			labels, len(series.Values),
+			labels, len(s.Values),
 			formatValue(st.min), st.minAt.Format(timeLayout),
 			formatValue(st.max), st.maxAt.Format(timeLayout),
 			formatValue(st.mean), formatValue(st.last))
-		for _, p := range sample(series.Values, renderedPoints) {
+		for _, p := range sample(s.Values, renderedPoints) {
 			fmt.Fprintf(&b, "  %s %s\n", p.At.Format(timeLayout), formatValue(p.Value))
 		}
 	}
-	return strings.TrimRight(b.String(), "\n"), total
+	return strings.TrimRight(b.String(), "\n"), len(r.series), points
 }
 
 // renderLabels prints a label set in a stable order, so two runs of the same

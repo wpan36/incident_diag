@@ -156,3 +156,43 @@ func TestRenderRecordsOnNoMatch(t *testing.T) {
 		t.Errorf("render = %q", got)
 	}
 }
+
+func TestScanLogCountsAnOverLongLineAndKeepsReading(t *testing.T) {
+	// A Scanner cannot continue past a line longer than its buffer, so one
+	// corrupt line used to cost the whole file — and with no rotation, that
+	// service's log would have stayed unreadable for good.
+	body := strings.Join([]string{
+		line(t1, "INFO", "before"),
+		`{"time":"` + t2 + `","level":"INFO","msg":"` + strings.Repeat("x", maxLogLineBytes+1) + `"}`,
+		line(t3, "INFO", "after"),
+	}, "\n")
+
+	recs, matched, unparseable := scan(t, body, logFilter{minLevel: levels["DEBUG"]})
+	if matched != 2 || len(recs) != 2 || recs[0].Msg != "before" || recs[1].Msg != "after" {
+		t.Errorf("matched=%d recs=%+v", matched, recs)
+	}
+	if unparseable != 1 {
+		t.Errorf("unparseable = %d, want 1", unparseable)
+	}
+}
+
+func TestScanLogReadsALongButLegalLine(t *testing.T) {
+	// Longer than the read buffer, shorter than the bound: a big stack trace
+	// has to survive in one piece.
+	msg := strings.Repeat("y", readBufferBytes*2)
+	body := line(t1, "ERROR", msg) + "\n"
+
+	recs, matched, unparseable := scan(t, body, logFilter{minLevel: levels["DEBUG"]})
+	if matched != 1 || unparseable != 0 || len(recs) != 1 || recs[0].Msg != msg {
+		t.Errorf("matched=%d unparseable=%d recs=%d", matched, unparseable, len(recs))
+	}
+}
+
+func TestScanLogReadsALastLineWithNoNewline(t *testing.T) {
+	body := line(t1, "INFO", "first") + "\n" + line(t2, "INFO", "unterminated")
+
+	recs, matched, _ := scan(t, body, logFilter{minLevel: levels["DEBUG"]})
+	if matched != 2 || len(recs) != 2 || recs[1].Msg != "unterminated" {
+		t.Errorf("matched=%d recs=%+v", matched, recs)
+	}
+}

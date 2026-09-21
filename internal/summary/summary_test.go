@@ -55,3 +55,19 @@ func TestCapNeverSplitsARune(t *testing.T) {
 		}
 	}
 }
+
+func TestCapAtASmallerLimit(t *testing.T) {
+	// The probe body cap is a budget inside a result, cut long before the whole
+	// result reaches the 8 KiB limit.
+	text, n, cut := CapAt("hello world", 5)
+	if text != "hello" || n != 11 || !cut {
+		t.Errorf("CapAt = %q, %d, %v", text, n, cut)
+	}
+	if text, _, cut := CapAt("世界", 4); cut && !utf8.ValidString(text) {
+		t.Errorf("CapAt produced invalid UTF-8: %q", text)
+	}
+	// A limit with no room at all still returns something valid.
+	if text, _, cut := CapAt("世", 1); !cut || text != "" {
+		t.Errorf("CapAt(_, 1) = %q, %v", text, cut)
+	}
+}

@@ -10,6 +10,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -111,11 +112,11 @@ func (c *Client) Tools() []Tool { return c.tools }
 // It returns an error only when the call itself failed — the transport, or a
 // tool name the server does not have. A tool that ran and reported a problem is
 // a Result with a non-OK status, because that is something the agent reasons
-// about rather than something that should end its run.
+// about rather than something that should end its run. A server that never
+// answered is the same kind of thing: this client's own deadline produces a
+// TIMEOUT result, not an error, since otherwise the most likely timeout there
+// is — ops-mcp hanging — is the one that could never be recorded as one.
 func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
 	var decoded any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &decoded); err != nil {
@@ -123,8 +124,18 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (R
 		}
 	}
 
-	res, err := c.session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: decoded})
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	res, err := c.session.CallTool(callCtx, &mcp.CallToolParams{Name: name, Arguments: decoded})
 	if err != nil {
+		// ctx, not callCtx: a caller that cancelled the run wants an error, not
+		// a tool result for a run that is over.
+		if ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+			note := fmt.Sprintf("%s did not answer within %s", name, c.timeout)
+			c.logger.Warn("tool call timed out", "tool", name, "timeout", c.timeout)
+			return Result{Text: note, Status: StatusTimeout, Note: note, OriginalBytes: len(note)}, nil
+		}
 		return Result{}, fmt.Errorf("mcpclient: call %s: %w", name, err)
 	}
 	return c.result(name, res), nil
@@ -139,25 +150,37 @@ func (c *Client) result(name string, res *mcp.CallToolResult) Result {
 
 	meta, err := decodeMeta(res.StructuredContent)
 	switch {
-	case err != nil:
-		// A result this client cannot account for still reaches the model, but
-		// the audit row says the accounting is missing rather than inventing
-		// numbers for it.
-		c.logger.Warn("tool result has no usable meta", "tool", name, "error", err)
-		out.OriginalBytes = len(out.Text)
-	default:
+	case err == nil:
 		out.Status = statusFor(meta.Kind)
 		out.OriginalBytes = meta.OriginalBytes
 		out.Truncated = meta.Truncated
 		out.Refused = meta.Refused
 		out.Note = meta.Note
-	}
+		// isError and a non-ok kind should always agree; if they do not, the
+		// flag the server set explicitly wins, because a result marked as an
+		// error must never be recorded as a success.
+		if res.IsError && out.Status == StatusOK {
+			out.Status = StatusError
+		}
 
-	// isError and a non-ok kind should always agree; if they do not, the flag
-	// the server set explicitly wins, because a result marked as an error must
-	// never be recorded as a success.
-	if res.IsError && out.Status == StatusOK {
-		out.Status = StatusError
+	case res.IsError:
+		// ops-mcp puts a meta envelope on every result it produces, so an
+		// isError carrying none did not come from a tool at all: it is the SDK
+		// rejecting the arguments against the tool's schema — a missing
+		// service, a limit sent as a string. That is something the model can
+		// fix on its next step, so it is recorded the way ops-mcp records its
+		// own refusals rather than as a broken dependency the agent should
+		// stop asking.
+		out.Refused = true
+		out.Note = out.Text
+		out.OriginalBytes = len(out.Text)
+
+	default:
+		// A result this client cannot account for still reaches the model, but
+		// the audit row says the accounting is missing rather than inventing
+		// numbers for it.
+		c.logger.Warn("tool result has no usable meta", "tool", name, "error", err)
+		out.OriginalBytes = len(out.Text)
 	}
 	return out
 }
@@ -190,14 +213,18 @@ func decodeMeta(structured any) (meta, error) {
 	return m, nil
 }
 
+// statusFor maps the server's kind onto the store's status. A kind this client
+// does not know means the two have drifted apart, which is recorded as an error
+// rather than as a success: a run that silently counted an unreadable result as
+// evidence is worse than one that shows a row nobody can explain.
 func statusFor(kind string) string {
 	switch kind {
+	case "ok":
+		return StatusOK
 	case "timeout":
 		return StatusTimeout
-	case "error":
-		return StatusError
 	default:
-		return StatusOK
+		return StatusError
 	}
 }
 
