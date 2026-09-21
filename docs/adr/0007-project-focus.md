@@ -37,8 +37,11 @@ and S7 for the agent runtime — had not been written yet, so the correction was
 - **Checkpoint and resume.** A run interrupted by a worker crash continues from its last
   persisted step instead of restarting. Every step, tool call and piece of evidence is
   already written to MySQL as it happens, so the checkpoint data exists; what was missing
-  was the ability to read it back. This upgrades the reason for persisting each step from
-  auditability to reliability.
+  was the ability to read it back.
+
+  **Reversed by [ADR 0009](0009-restart-instead-of-resume.md)** before any of it was
+  written. Storing a checkpoint is cheap; using one is not, for the reasons this ADR's own
+  consequences section lists. A reclaimed run restarts instead.
 - **Agent-level evaluation.** Retrieval had a measured quality number and the agent had
   none. The new milestone runs the agent against every injectable fault scenario and
   reports diagnosis accuracy, step and tool-call counts, token cost and latency

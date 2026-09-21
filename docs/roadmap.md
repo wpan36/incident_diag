@@ -1,6 +1,6 @@
 # Roadmap
 
-34 implementation milestones across 7 phases, plus 7 Tier A specs. See
+33 implementation milestones across 7 phases, plus 7 Tier A specs. See
 `docs/workflow.md` for what Tier A and Tier B mean and how each milestone is executed.
 
 **Status legend:** `done` · `in progress` · `todo`
@@ -78,14 +78,13 @@ Specified by S6, which is written at the top of Phase C.
 
 | | Milestone | Status |
 | --- | --- | --- |
-| **S7** | **Spec: `agent-runtime`** — types, state machine, context budget, limits, failure semantics, and resuming a run from its last persisted step | todo |
+| **S7** | **Spec: `agent-runtime`** — types, state machine, context budget, limits and failure semantics | todo |
 | M21 | LLM client: OpenAI-compatible chat completions with streaming, timeouts, bounded retries, token accounting; tolerant structured-output parser; scriptable fake | todo |
 | M22 | Core types and `ContextBuilder`: `AgentRun`, `AgentStep`, `Action`, `Observation`, `ToolCall`, `Evidence`, `FinalResult`; context assembled within a token budget; no chain-of-thought persisted | todo |
 | M23 | Bounded agent loop: `MaxSteps`, `MaxToolCalls`, `MaxRunDuration`, token budget. Deterministic tests for convergence, each limit, cancellation, malformed output and tool failure — no infrastructure required | todo |
-| M23a | Checkpoint and resume: a run reclaimed after a crash continues from its last persisted step instead of restarting, rebuilding context from `agent_steps` and re-validating stale tool observations | todo |
 | **S8** | **Spec: `agent-execution-and-events`** — event schema and worker idempotency | todo |
 | M24 | Redis Streams event bus: event schema, publisher, capped and expiring streams | todo |
-| M25 | `agent-worker`: run creation produces to Kafka; worker executes the loop, persists steps and tool calls, publishes events, writes the final result; redelivery does not duplicate a run; a lease-reclaimed run resumes rather than restarts | todo |
+| M25 | `agent-worker`: run creation produces to Kafka; worker executes the loop, persists steps and tool calls, publishes events, writes the final result; redelivery does not duplicate a run; a lease-reclaimed run restarts, deleting the previous attempt's rows first, the way re-ingesting a document does (ADR 0009) | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 
