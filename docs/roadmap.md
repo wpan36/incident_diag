@@ -46,9 +46,17 @@ topic. Baseline and what the numbers do and do not mean: `docs/rag-eval.md`.
 | | Milestone | Status |
 | --- | --- | --- |
 | **S6** | **Spec: `mcp-tool-boundary`** — tool interfaces, read-only guarantees, the allowlist model, and the structured log format `read_service_logs` consumes. **Written here, one phase ahead of the milestones it gates**, because M13 emits that log format and M19 reads it; defining it once, before either exists, is why it moved | **done** |
-| M13 | `checkout-service` → `payment-service`, each with a business endpoint, `/health`, `/metrics`, and `/fault` injecting latency, 5xx and CPU load; structured JSON logs to a mounted directory, in the format S6 defines (Tier B) | todo |
-| M14 | Prometheus scraping both services; Grafana with a provisioned datasource (Tier B) | todo |
-| M15 | Fault scenarios: a script reproducing the payment-service latency incident and the other injectable faults, against the corpus M12 already wrote (Tier B) | todo |
+| M13 | `checkout-service` → `payment-service`, each with a business endpoint, `/health`, `/metrics`, and `/fault` injecting latency, 5xx and CPU load; structured JSON logs to a mounted directory, in the format S6 defines (Tier B) | **done** |
+| M14 | Prometheus scraping both services; Grafana with a provisioned datasource (Tier B) | **done** |
+| M15 | Fault scenarios: a script reproducing the payment-service latency incident and the other injectable faults, against the corpus M12 already wrote (Tier B) | **done** |
+
+M13's spec is `docs/plans/incident-lab.md`; M14 and M15 share
+`docs/plans/observability-and-fault-scenarios.md`. The whole lab runs behind compose's
+`lab` profile: `make up-lab`, then `make scenario SCENARIO=payment-latency`.
+
+**cAdvisor reports nothing on a Docker daemon using the containerd image store**, so
+`container_cpu_*{name="checkout-service"}` can be empty; the spec's known limitations say
+what that costs and what still works.
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 

@@ -1,0 +1,29 @@
+# Prometheus scrapes the Incident Lab. It is started by `make up-lab`.
+#
+# The job names are a contract with the knowledge corpus in testdata/knowledge.
+# Its runbooks say things like "the p99 of http_request_duration_seconds for
+# checkout-service", which is only a query if the job label is the service name.
+
+global:
+  # Fifteen seconds gives rate() and histogram_quantile() enough points inside
+  # the five-minute windows the runbooks reason over.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: checkout-service
+    static_configs:
+      - targets: ["checkout-service:8080"]
+
+  - job_name: payment-service
+    static_configs:
+      - targets: ["payment-service:8080"]
+
+  # container_cpu_usage_seconds_total and container_cpu_cfs_throttled_seconds_total
+  # come from here. The services do not publish them: those names mean cAdvisor's
+  # measurement, and reporting our own number under them would make the metric a
+  # lie. cAdvisor labels by container name, which is why the lab services pin
+  # theirs in the compose file.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]

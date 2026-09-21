@@ -38,6 +38,11 @@ make up               # start the local infrastructure (MySQL, Kafka, Elasticsea
 make migrate-up       # apply the schema
 make test-integration # also runs the tests that need the compose stack (serially)
 make down             # stop it again; make down-clean also drops the data
+
+make up-lab           # also start the Incident Lab: the two demo services,
+                      # Prometheus (9090), Grafana (3000) and cAdvisor
+make scenario SCENARIO=payment-latency   # break it on purpose and report what moved
+make scenario         # list the scenarios
 ```
 
 `make check` never needs infrastructure. The integration tests skip themselves unless

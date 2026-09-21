@@ -79,7 +79,7 @@ func run() error {
 		return err
 	}
 
-	logger := log.New(os.Stdout, cfg.LogLevel)
+	logger := log.New(os.Stdout, cfg.LogLevel, "ingestion-worker")
 	logger.Info("starting ingestion worker", "config", cfg.String(), "database", dbCfg.String(),
 		"kafka", kafkaCfg.String(), "reconcile", recCfg.String(), "documents", docCfg.String(),
 		"embedding", embedCfg.String(), "search", searchCfg.String())

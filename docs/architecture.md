@@ -225,6 +225,16 @@ exposing a business endpoint, `/health`, `/metrics`, and a `/fault` endpoint tha
 latency, 5xx errors or CPU load. Prometheus scrapes them for real, and they write
 structured JSON logs to a directory that `read_service_logs` is allowed to read.
 
+`payment-service` authorizes through a fixed-size pool of connections to a simulated card
+processor, and that pool is the model: raising the processor's latency holds connections
+longer, which fills the pool, which raises checkout's client latency, until checkout
+abandons calls that succeeded on the other side. Every metric the corpus's runbooks name is
+exported, so a retrieved runbook describes something that exists.
+
+`cmd/lab-scenario` drives the lab into each of those failures and reports whether the
+numbers moved, including a healthy control. See `docs/plans/incident-lab.md` and
+`docs/plans/observability-and-fault-scenarios.md`.
+
 This exists so the agent is evaluated against a system that actually breaks, rather than
 against fixtures.
 

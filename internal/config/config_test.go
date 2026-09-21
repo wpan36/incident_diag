@@ -27,6 +27,8 @@ func isolate(t *testing.T) {
 		"EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
 		"EMBED_BATCH_SIZE", "EMBED_TIMEOUT", "EMBED_MAX_RETRIES",
 		"ELASTICSEARCH_URL", "ES_INDEX_ALIAS",
+		"CHECKOUT_PAYMENT_URL", "CHECKOUT_PAYMENT_TIMEOUT",
+		"PAYMENT_POOL_SIZE", "PAYMENT_PROCESSOR_LATENCY_MS", "LAB_LOG_DIR",
 	} {
 		t.Setenv(k, "")
 	}
@@ -518,5 +520,82 @@ func TestLoadReconcileReturnsTheZeroValueOnError(t *testing.T) {
 	}
 	if r != (Reconcile{}) {
 		t.Errorf("Reconcile = %+v, want the zero value: a caller that ignores the error must not get something usable", r)
+	}
+}
+
+func TestLoadCheckout(t *testing.T) {
+	isolate(t)
+
+	// The dependency's address has no default: a checkout-service quietly
+	// calling localhost would look healthy while charging nothing.
+	if _, err := LoadCheckout(); err == nil {
+		t.Fatal("LoadCheckout() with no CHECKOUT_PAYMENT_URL succeeded, want an error")
+	}
+
+	t.Setenv("CHECKOUT_PAYMENT_URL", "http://payment-service:8080")
+	c, err := LoadCheckout()
+	if err != nil {
+		t.Fatalf("LoadCheckout(): %v", err)
+	}
+	// The default is the corpus's value, and the scenario in M15 depends on it
+	// being shorter than the injected latency.
+	if c.PaymentTimeout != 2*time.Second {
+		t.Errorf("PaymentTimeout = %s, want 2s", c.PaymentTimeout)
+	}
+	if c.LogDir != DefaultLabLogDir {
+		t.Errorf("LogDir = %q, want %q", c.LogDir, DefaultLabLogDir)
+	}
+
+	t.Setenv("CHECKOUT_PAYMENT_TIMEOUT", "500ms")
+	t.Setenv("LAB_LOG_DIR", "/tmp/lab")
+	if c, err = LoadCheckout(); err != nil || c.PaymentTimeout != 500*time.Millisecond || c.LogDir != "/tmp/lab" {
+		t.Errorf("overrides not applied: %+v (%v)", c, err)
+	}
+}
+
+func TestLoadCheckoutRejectsARelativePaymentURL(t *testing.T) {
+	isolate(t)
+	// A bare host is the plausible mistake, and it would fail on the first
+	// charge rather than at startup.
+	t.Setenv("CHECKOUT_PAYMENT_URL", "payment-service:8080")
+
+	if _, err := LoadCheckout(); err == nil {
+		t.Fatal("LoadCheckout() accepted a URL with no scheme")
+	} else if !strings.Contains(err.Error(), "CHECKOUT_PAYMENT_URL") {
+		t.Errorf("error = %v, want it to name CHECKOUT_PAYMENT_URL", err)
+	}
+}
+
+func TestLoadPayment(t *testing.T) {
+	isolate(t)
+
+	p, err := LoadPayment()
+	if err != nil {
+		t.Fatalf("LoadPayment() with an empty environment: %v", err)
+	}
+	if p.PoolSize != 20 {
+		t.Errorf("PoolSize = %d, want 20", p.PoolSize)
+	}
+	if p.ProcessorLatency != 50*time.Millisecond {
+		t.Errorf("ProcessorLatency = %s, want 50ms", p.ProcessorLatency)
+	}
+
+	// Milliseconds, not a Go duration: the variable name the corpus uses says
+	// so, and "500ms" here would be an integer parse failure.
+	t.Setenv("PAYMENT_POOL_SIZE", "50")
+	t.Setenv("PAYMENT_PROCESSOR_LATENCY_MS", "250")
+	if p, err = LoadPayment(); err != nil || p.PoolSize != 50 || p.ProcessorLatency != 250*time.Millisecond {
+		t.Errorf("overrides not applied: %+v (%v)", p, err)
+	}
+}
+
+func TestLoadPaymentRejectsAnEmptyPool(t *testing.T) {
+	isolate(t)
+	t.Setenv("PAYMENT_POOL_SIZE", "0")
+
+	if _, err := LoadPayment(); err == nil {
+		t.Fatal("LoadPayment() accepted PAYMENT_POOL_SIZE=0")
+	} else if !strings.Contains(err.Error(), "PAYMENT_POOL_SIZE") {
+		t.Errorf("error = %v, want it to name PAYMENT_POOL_SIZE", err)
 	}
 }

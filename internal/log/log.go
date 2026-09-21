@@ -13,6 +13,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"time"
 )
 
 // Attribute keys. They are constants because queries in a log backend are
@@ -20,6 +21,11 @@ import (
 const (
 	KeyRequestID = "request_id"
 	KeyRunID     = "run_id"
+
+	// KeyService names the process that emitted the record. It is set once,
+	// here, rather than at call sites, and it is part of the log format the
+	// MCP tool boundary specification fixes.
+	KeyService = "service"
 )
 
 // ctxKey is unexported so no other package can collide with these context keys.
@@ -30,15 +36,47 @@ const (
 	runIDKey
 )
 
-// New returns a JSON logger writing to w at the given level, with correlation
-// identifiers pulled from context on every record.
+// New returns a JSON logger writing to w at the given level, tagged with the
+// service name and with correlation identifiers pulled from context on every
+// record.
 //
 // The output is JSON in every environment. Pretty console output would be
 // nicer to read locally, but having local logs differ from container logs means
 // debugging a problem in one format and reading it in another.
-func New(w io.Writer, level slog.Level) *slog.Logger {
-	base := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
+//
+// service is a parameter rather than something a binary is expected to add with
+// With, for the same reason the identifiers above are not added at call sites:
+// a required argument cannot be forgotten. An empty service is allowed and
+// omits the attribute, which is what the package's own tests want.
+func New(w io.Writer, level slog.Level, service string) *slog.Logger {
+	var base slog.Handler = slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level:       level,
+		ReplaceAttr: utcMillisecondTime,
+	})
+	if service != "" {
+		base = base.WithAttrs([]slog.Attr{slog.String(KeyService, service)})
+	}
 	return slog.New(&contextHandler{base: base, resolved: base})
+}
+
+// utcMillisecondTime forces the record timestamp to UTC at millisecond
+// precision.
+//
+// Both halves matter to read_service_logs, which filters records from several
+// services by time window. Containers do not agree on a time zone, so a local
+// timestamp makes that filter silently wrong; the truncation is what the log
+// format specifies, and slog would otherwise emit nanoseconds.
+//
+// Only the top-level time attribute is touched. A time carried as a
+// caller-supplied attribute is that caller's data.
+func utcMillisecondTime(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) != 0 || a.Key != slog.TimeKey {
+		return a
+	}
+	if t, ok := a.Value.Any().(time.Time); ok {
+		a.Value = slog.TimeValue(t.UTC().Truncate(time.Millisecond))
+	}
+	return a
 }
 
 // Discard returns a logger that throws everything away. Tests that exercise a

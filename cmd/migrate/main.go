@@ -47,7 +47,7 @@ func run() error {
 		return err
 	}
 
-	logger := log.New(os.Stderr, cfg.LogLevel)
+	logger := log.New(os.Stderr, cfg.LogLevel, "migrate")
 
 	switch command {
 	case "up":

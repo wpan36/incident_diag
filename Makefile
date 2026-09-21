@@ -112,6 +112,46 @@ down-clean:
 logs:
 	$(COMPOSE) logs -f
 
+# ---- Incident Lab ----------------------------------------------------------
+
+# The two lab services run as this user, because they write to a bind mount
+# owned by whoever ran make. .env can override both.
+#
+# Exported by name rather than left to the blanket `export` above, which only
+# runs when .env exists. Without that, `make up-lab` on a fresh clone would
+# hand compose nothing, compose would fall back to 1000:1000, and the two
+# containers would crash-loop on a log directory they cannot write.
+LAB_UID ?= $(shell id -u)
+LAB_GID ?= $(shell id -g)
+export LAB_UID LAB_GID
+
+# The bind-mount source has to exist before compose starts: Docker would create
+# a missing one as root, and the services could not write to it.
+#
+# Not called LAB_LOG_DIR: that variable is the path a service writes to, which
+# .env sets for a binary run outside compose, and the two must not be the same
+# knob. Inside a container the path is always /var/log/lab.
+LAB_LOG_MOUNT ?= data/lab-logs
+
+# Starts the lab on top of whatever `make up` already started. There is no
+# `down-lab`: `make down` removes the whole project, profiles included.
+.PHONY: up-lab
+up-lab:
+	mkdir -p $(LAB_LOG_MOUNT)
+	$(COMPOSE) --profile lab up -d --build --wait
+
+.PHONY: logs-lab
+logs-lab:
+	$(COMPOSE) --profile lab logs -f checkout-service payment-service
+
+# make scenario SCENARIO=payment-latency
+# Flags go in SCENARIO too: SCENARIO="checkout-cpu -hold 5m".
+SCENARIO ?= list
+
+.PHONY: scenario
+scenario:
+	$(GO) run ./cmd/lab-scenario $(SCENARIO)
+
 # ---- Migrations ------------------------------------------------------------
 
 .PHONY: migrate-up

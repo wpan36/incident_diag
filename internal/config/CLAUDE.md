@@ -23,6 +23,9 @@ anything partly valid. The environment is the only source: Compose supplies `.en
   budget) and `LoadEmbedding`.
 - `search.go` — `Search` (Elasticsearch URL, index alias), `LoadSearch` and
   `DefaultIndexAlias`.
+- `lab.go` — `Checkout` and `Payment`, the two Incident Lab services' settings, plus
+  `DefaultLabLogDir`. Their variable names come from the knowledge corpus rather than from
+  this package's conventions, because the runbooks the agent retrieves name them.
 - `config_test.go` — unit tests for every loader. `isolate` blanks every variable any
   loader reads, so a developer's sourced `.env` cannot change a result. A new loader means
   adding its variables to that list, or its tests inherit the developer's shell.
@@ -36,6 +39,10 @@ timeouts.
 
 ## Gotchas
 
+- **The lab's variable names are not ours to tidy.** `CHECKOUT_PAYMENT_TIMEOUT`,
+  `PAYMENT_POOL_SIZE` and `PAYMENT_PROCESSOR_LATENCY_MS` appear in `testdata/knowledge`,
+  and the last is a millisecond count rather than a Go duration for the same reason. Their
+  defaults are the values the corpus's postmortems quote.
 - **Loading is deliberately split by concern, not by binary.** `Load` is shared, so a
   required `MYSQL_DSN` in it would stop `ops-mcp` and the Incident Lab services from
   starting over a database none of them opens. Add a new field to the narrowest struct

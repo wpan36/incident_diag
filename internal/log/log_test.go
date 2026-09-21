@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 // record decodes the single JSON log line written to buf.
@@ -28,7 +29,7 @@ func record(t *testing.T, buf *bytes.Buffer) map[string]any {
 
 func TestIdentifiersFlowFromContext(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, slog.LevelInfo)
+	logger := New(&buf, slog.LevelInfo, "test-service")
 
 	ctx := WithRunID(WithRequestID(context.Background(), "req-1"), "run-9")
 	logger.InfoContext(ctx, "investigating")
@@ -47,7 +48,7 @@ func TestIdentifiersFlowFromContext(t *testing.T) {
 
 func TestAbsentIdentifiersAreOmitted(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, slog.LevelInfo)
+	logger := New(&buf, slog.LevelInfo, "test-service")
 
 	logger.InfoContext(context.Background(), "starting")
 
@@ -64,7 +65,7 @@ func TestAbsentIdentifiersAreOmitted(t *testing.T) {
 
 func TestDerivedLoggerKeepsContextIdentifiers(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, slog.LevelInfo)
+	logger := New(&buf, slog.LevelInfo, "test-service")
 
 	// The regression this guards: if WithAttrs did not rewrap the handler, the
 	// derived logger would fall back to the plain JSON handler and quietly stop
@@ -93,7 +94,7 @@ func TestDerivedLoggerKeepsContextIdentifiers(t *testing.T) {
 
 func TestLevelFiltering(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, slog.LevelWarn)
+	logger := New(&buf, slog.LevelWarn, "test-service")
 
 	logger.InfoContext(context.Background(), "should not appear")
 	if buf.Len() != 0 {
@@ -126,7 +127,7 @@ func TestDerivedLoggersDoNotShareAttributes(t *testing.T) {
 	// The bug this guards against is appending to a shared slice: the second
 	// derivation overwrites the first one's entry in place.
 	var buf bytes.Buffer
-	parent := New(&buf, slog.LevelInfo).With("shared", "yes")
+	parent := New(&buf, slog.LevelInfo, "test-service").With("shared", "yes")
 
 	a := parent.With("which", "a")
 	b := parent.With("which", "b")
@@ -155,7 +156,7 @@ func TestDerivedLoggersDoNotShareAttributes(t *testing.T) {
 
 func TestGroupedLoggerKeepsIdentifiersTopLevel(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, slog.LevelInfo).WithGroup("tool").With("name", "prometheus_query")
+	logger := New(&buf, slog.LevelInfo, "test-service").WithGroup("tool").With("name", "prometheus_query")
 
 	ctx := WithRunID(context.Background(), "run-7")
 	logger.InfoContext(ctx, "tool finished", "duration_ms", 12)
@@ -183,7 +184,7 @@ func TestGroupedLoggerKeepsIdentifiersTopLevel(t *testing.T) {
 
 func TestEnabledIsDelegated(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, slog.LevelWarn)
+	logger := New(&buf, slog.LevelWarn, "test-service")
 	ctx := context.Background()
 
 	if logger.Enabled(ctx, slog.LevelInfo) {
@@ -196,5 +197,56 @@ func TestEnabledIsDelegated(t *testing.T) {
 	// before building a record.
 	if logger.With("k", "v").WithGroup("g").Enabled(ctx, slog.LevelInfo) {
 		t.Error("Enabled(info) = true on a derived logger at warn level")
+	}
+}
+
+func TestServiceIsOnEveryRecord(t *testing.T) {
+	var buf bytes.Buffer
+	// The attribute has to survive derivation and grouping, because that is
+	// how it would silently disappear: read_service_logs identifies a file by
+	// service, but anything reading several files together needs the field.
+	logger := New(&buf, slog.LevelInfo, "payment-service").With("component", "pool").WithGroup("detail")
+
+	logger.InfoContext(context.Background(), "charge complete")
+
+	got := record(t, &buf)
+	if got[KeyService] != "payment-service" {
+		t.Errorf("%s = %v, want payment-service; full record: %v", KeyService, got[KeyService], got)
+	}
+}
+
+func TestEmptyServiceIsOmitted(t *testing.T) {
+	var buf bytes.Buffer
+	New(&buf, slog.LevelInfo, "").InfoContext(context.Background(), "hello")
+
+	if _, ok := record(t, &buf)[KeyService]; ok {
+		t.Errorf("%s present for an empty service name", KeyService)
+	}
+}
+
+func TestTimestampIsUTCWithMillisecondPrecision(t *testing.T) {
+	var buf bytes.Buffer
+	New(&buf, slog.LevelInfo, "api").InfoContext(context.Background(), "hello")
+
+	raw, ok := record(t, &buf)[slog.TimeKey].(string)
+	if !ok {
+		t.Fatalf("time is not a string: %v", buf.String())
+	}
+	// Zulu, not +08:00: a time-window filter across services whose containers
+	// disagree about the zone is silently wrong.
+	if !strings.HasSuffix(raw, "Z") {
+		t.Errorf("time = %q, want a UTC timestamp ending in Z", raw)
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("time %q is not RFC 3339: %v", raw, err)
+	}
+	// RFC3339Nano drops trailing zeros, so the assertion is on precision
+	// rather than on the number of digits.
+	if ts.Nanosecond()%int(time.Millisecond) != 0 {
+		t.Errorf("time = %q, want millisecond precision", raw)
+	}
+	if d := time.Since(ts); d < 0 || d > time.Minute {
+		t.Errorf("time = %q is %v away from now", raw, d)
 	}
 }

@@ -1,0 +1,12 @@
+# The build needs the Go module and its source, and nothing else. Everything
+# here either would not be used or must never reach an image.
+.git
+.env
+.env.*
+!.env.example
+/data
+/bin
+/dist
+docs
+web/dist
+node_modules

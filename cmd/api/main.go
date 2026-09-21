@@ -52,7 +52,7 @@ func run() error {
 		return err
 	}
 
-	logger := log.New(os.Stdout, cfg.LogLevel)
+	logger := log.New(os.Stdout, cfg.LogLevel, "api")
 	logger.Info("starting api", "config", cfg.String(), "database", dbCfg.String(),
 		"http", httpCfg.String(), "documents", docCfg.String(), "kafka", kafkaCfg.String(),
 		"embedding", embedCfg.String(), "search", searchCfg.String())
