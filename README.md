@@ -34,15 +34,17 @@ nothing needs exporting by hand.
 
 ```sh
 make check            # gofmt + go vet + go test + go test -race
-make up               # start the local infrastructure (MySQL today)
+make up               # start the local infrastructure (MySQL, Kafka, Elasticsearch)
 make migrate-up       # apply the schema
 make test-integration # also runs the tests that need the compose stack (serially)
 make down             # stop it again; make down-clean also drops the data
 ```
 
 `make check` never needs infrastructure. The integration tests skip themselves unless
-`TEST_MYSQL_DSN` is set, so they are opt-in rather than a hidden prerequisite; `.env`
-supplies it. Run these through `make` — `.env` is not a shell script and sourcing it
+`TEST_MYSQL_DSN`, `TEST_KAFKA_BROKERS` and `TEST_ELASTICSEARCH_URL` are set, so they are
+opt-in rather than a hidden prerequisite; `.env` supplies them, and `make test-integration`
+refuses to run without them rather than reporting a green pass in which everything
+skipped. Run these through `make` — `.env` is not a shell script and sourcing it
 fails on the unquoted DSN.
 
 Design documents live in `docs/plans/`, architecture decision records in `docs/adr/`.

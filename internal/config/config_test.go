@@ -22,7 +22,11 @@ func isolate(t *testing.T) {
 		"DOCUMENT_STORAGE_ROOT", "DOCUMENT_MAX_UPLOAD_BYTES",
 		"KAFKA_BROKERS", "KAFKA_PRODUCE_TIMEOUT",
 		"RECONCILE_INTERVAL", "RECONCILE_PENDING_AFTER", "RECONCILE_BATCH",
-		"INGEST_LEASE", "INGEST_MAX_ATTEMPTS",
+		"INGEST_LEASE", "INGEST_MAX_ATTEMPTS", "INGEST_DOCUMENT_TIMEOUT",
+		"CHUNK_TARGET_TOKENS", "CHUNK_MAX_PER_DOCUMENT",
+		"EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
+		"EMBED_BATCH_SIZE", "EMBED_TIMEOUT", "EMBED_MAX_RETRIES",
+		"ELASTICSEARCH_URL", "ES_INDEX_ALIAS",
 	} {
 		t.Setenv(k, "")
 	}
@@ -312,6 +316,22 @@ func TestLoadDocuments(t *testing.T) {
 	}
 }
 
+func TestLoadDocumentsReadsTheChunkingBudget(t *testing.T) {
+	isolate(t)
+	d, err := LoadDocuments()
+	if err != nil {
+		t.Fatalf("LoadDocuments: %v", err)
+	}
+	if d.ChunkTargetTokens != 400 || d.ChunkMaxPerDocument != 2000 {
+		t.Errorf("chunking defaults not applied: %+v", d)
+	}
+
+	t.Setenv("CHUNK_TARGET_TOKENS", "0")
+	if _, err := LoadDocuments(); err == nil {
+		t.Fatal("LoadDocuments accepted a zero chunk target")
+	}
+}
+
 func TestLoadDocumentsRejectsAnImpossibleLimit(t *testing.T) {
 	isolate(t)
 	t.Setenv("DOCUMENT_MAX_UPLOAD_BYTES", "0")
@@ -321,6 +341,56 @@ func TestLoadDocumentsRejectsAnImpossibleLimit(t *testing.T) {
 }
 
 // --- Kafka ------------------------------------------------------------------
+
+func TestLoadEmbedding(t *testing.T) {
+	isolate(t)
+	// All three provider settings are required: there is no sensible default
+	// for an endpoint, a key or a model.
+	if _, err := LoadEmbedding(); err == nil {
+		t.Fatal("LoadEmbedding accepted an empty environment")
+	}
+
+	t.Setenv("EMBEDDING_BASE_URL", "https://api.example.com/v1")
+	t.Setenv("EMBEDDING_API_KEY", "secret")
+	t.Setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+
+	c, err := LoadEmbedding()
+	if err != nil {
+		t.Fatalf("LoadEmbedding: %v", err)
+	}
+	if c.BatchSize != 32 || c.Timeout != 30*time.Second || c.MaxRetries != 3 {
+		t.Errorf("defaults not applied: %+v", c)
+	}
+	if strings.Contains(c.String(), "secret") {
+		t.Errorf("String() leaks the API key: %s", c.String())
+	}
+
+	t.Setenv("EMBED_BATCH_SIZE", "0")
+	if _, err := LoadEmbedding(); err == nil {
+		t.Fatal("LoadEmbedding accepted a zero batch size")
+	}
+}
+
+func TestLoadSearch(t *testing.T) {
+	isolate(t)
+	if _, err := LoadSearch(); err == nil {
+		t.Fatal("LoadSearch accepted an empty environment")
+	}
+
+	t.Setenv("ELASTICSEARCH_URL", "http://127.0.0.1:9200")
+	s, err := LoadSearch()
+	if err != nil {
+		t.Fatalf("LoadSearch: %v", err)
+	}
+	if s.IndexAlias != DefaultIndexAlias {
+		t.Errorf("IndexAlias = %q, want %q", s.IndexAlias, DefaultIndexAlias)
+	}
+
+	t.Setenv("ES_INDEX_ALIAS", "chunks_test")
+	if s, err = LoadSearch(); err != nil || s.IndexAlias != "chunks_test" {
+		t.Errorf("override not applied: %+v (%v)", s, err)
+	}
+}
 
 func TestLoadKafkaRequiresBrokers(t *testing.T) {
 	isolate(t)
@@ -398,6 +468,26 @@ func TestLoadReconcileDefaults(t *testing.T) {
 	}
 	if r.MaxAttempts != 3 {
 		t.Errorf("MaxAttempts = %d, want 3", r.MaxAttempts)
+	}
+	if r.DocumentTimeout != 5*time.Minute {
+		t.Errorf("DocumentTimeout = %s, want 5m", r.DocumentTimeout)
+	}
+}
+
+// TestLoadReconcileRejectsATimeoutThatOutlastsTheLease is the constraint the
+// whole ingestion state machine rests on: a handler still working after the
+// lease has expired is a document another worker is free to claim.
+func TestLoadReconcileRejectsATimeoutThatOutlastsTheLease(t *testing.T) {
+	isolate(t)
+	t.Setenv("INGEST_LEASE", "2m")
+	t.Setenv("INGEST_DOCUMENT_TIMEOUT", "5m")
+
+	_, err := LoadReconcile()
+	if err == nil {
+		t.Fatal("LoadReconcile accepted a document timeout longer than the lease")
+	}
+	if !strings.Contains(err.Error(), "INGEST_LEASE") {
+		t.Errorf("err = %v, want it to name both variables", err)
 	}
 }
 

@@ -1,7 +1,7 @@
 # Local infrastructure for development and integration tests.
 #
-# Services are added as the milestones that need them land. Today that is MySQL
-# and Kafka; Elasticsearch, Prometheus and Grafana follow.
+# Services are added as the milestones that need them land. Today that is MySQL,
+# Kafka and Elasticsearch; Prometheus and Grafana follow.
 #
 # Values come from the repository's .env (see .env.example). Compose does not
 # find that file on its own: run through `make up` and the rest of the compose
@@ -90,5 +90,42 @@ services:
     # re-enqueue from the reconciler, never a document. Mounting a named volume
     # would also hand the broker a root-owned directory it cannot write to.
 
+  elasticsearch:
+    # The client's major version must match the server's, so the
+    # go-elasticsearch/v8 requirement in go.mod and this tag are a pair:
+    # neither moves without the other.
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    restart: unless-stopped
+    environment:
+      # One node, which is both master and data. ADR 0005 rules out a cluster,
+      # so there is nothing to discover.
+      discovery.type: single-node
+      # No TLS and no authentication. This is local development infrastructure
+      # on a private network; enabling security here would mean distributing a
+      # certificate and a password for a service nothing outside Compose can
+      # reach.
+      xpack.security.enabled: "false"
+      # Bounded, or Elasticsearch sizes its heap from the host's RAM and takes
+      # a machine that is also running MySQL, Kafka and a compiler.
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      # Published so tests and locally run binaries can reach it from the host.
+      - "${ES_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      # Yellow is the healthy state here: number_of_replicas is 0, but the
+      # cluster still reports yellow briefly while the index is being created.
+      # make up waits on this, so it has to mean "ready to answer queries".
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
 volumes:
   mysql-data:
+  # Unlike Kafka's log, the index is worth keeping across a restart. Its
+  # contents can always be rebuilt from the files plus MySQL, but losing it
+  # silently leaves every document READY and unsearchable.
+  elasticsearch-data:

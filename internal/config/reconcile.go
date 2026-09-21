@@ -37,6 +37,16 @@ type Reconcile struct {
 	// FAILED for a human. Attempts are counted by the claim, so this is a count
 	// of claims, not of retries after the first one.
 	MaxAttempts int
+
+	// DocumentTimeout is the deadline on one document, applied the moment the
+	// claim succeeds and covering everything from reading the file to the
+	// terminal write.
+	//
+	// It must stay below Lease. A handler that runs longer than the lease is a
+	// document being worked on by one worker while another is free to claim it,
+	// which is the invariant the whole ingestion state machine rests on — so
+	// the relationship is validated here rather than left to a comment.
+	DocumentTimeout time.Duration
 }
 
 // LoadReconcile reads the sweep policy from the environment, reporting every
@@ -45,11 +55,12 @@ func LoadReconcile() (Reconcile, error) {
 	var e env
 
 	r := Reconcile{
-		Interval:     e.optionalDuration("RECONCILE_INTERVAL", 30*time.Second),
-		PendingAfter: e.optionalDuration("RECONCILE_PENDING_AFTER", 60*time.Second),
-		Batch:        e.optionalInt("RECONCILE_BATCH", 100),
-		Lease:        e.optionalDuration("INGEST_LEASE", 10*time.Minute),
-		MaxAttempts:  e.optionalInt("INGEST_MAX_ATTEMPTS", 3),
+		Interval:        e.optionalDuration("RECONCILE_INTERVAL", 30*time.Second),
+		PendingAfter:    e.optionalDuration("RECONCILE_PENDING_AFTER", 60*time.Second),
+		Batch:           e.optionalInt("RECONCILE_BATCH", 100),
+		Lease:           e.optionalDuration("INGEST_LEASE", 10*time.Minute),
+		MaxAttempts:     e.optionalInt("INGEST_MAX_ATTEMPTS", 3),
+		DocumentTimeout: e.optionalDuration("INGEST_DOCUMENT_TIMEOUT", 5*time.Minute),
 	}
 
 	if r.Interval <= 0 {
@@ -67,6 +78,13 @@ func LoadReconcile() (Reconcile, error) {
 	if r.MaxAttempts < 1 {
 		e.fail("INGEST_MAX_ATTEMPTS must be at least 1, got %d", r.MaxAttempts)
 	}
+	if r.DocumentTimeout <= 0 {
+		e.fail("INGEST_DOCUMENT_TIMEOUT must be greater than zero")
+	}
+	if r.DocumentTimeout >= r.Lease {
+		e.fail("INGEST_DOCUMENT_TIMEOUT (%s) must be shorter than INGEST_LEASE (%s), "+
+			"or a document still being worked on can be claimed a second time", r.DocumentTimeout, r.Lease)
+	}
 
 	if err := e.err(); err != nil {
 		return Reconcile{}, err
@@ -76,6 +94,6 @@ func LoadReconcile() (Reconcile, error) {
 
 // String renders the configuration for startup logging.
 func (r Reconcile) String() string {
-	return fmt.Sprintf("interval=%s pending_after=%s batch=%d lease=%s max_attempts=%d",
-		r.Interval, r.PendingAfter, r.Batch, r.Lease, r.MaxAttempts)
+	return fmt.Sprintf("interval=%s pending_after=%s batch=%d lease=%s max_attempts=%d document_timeout=%s",
+		r.Interval, r.PendingAfter, r.Batch, r.Lease, r.MaxAttempts, r.DocumentTimeout)
 }

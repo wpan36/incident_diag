@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
@@ -40,10 +41,39 @@ type Consumer struct {
 	logger *slog.Logger
 }
 
+// ConsumerOption adjusts a consumer at construction.
+type ConsumerOption func(*consumerOptions)
+
+type consumerOptions struct {
+	rebalanceTimeout time.Duration
+}
+
+// WithRebalanceTimeout sets how long the group manager waits for this member to
+// rejoin a rebalance.
+//
+// It matters because BlockRebalanceOnPoll means a pending rebalance waits for
+// the handler to finish: a member whose handler outlasts this timeout is
+// evicted, its message is redelivered, and the claim then refuses it because
+// the row is already PROCESSING. So the value belongs to whatever bounds the
+// handler — INGEST_DOCUMENT_TIMEOUT for the ingestion worker, MaxRunDuration
+// for the agent worker — plus a margin, and is derived from it rather than
+// configured separately, so the two cannot be raised apart.
+//
+// Without it, franz-go's default applies, which is right for a consumer whose
+// handler is fast.
+func WithRebalanceTimeout(d time.Duration) ConsumerOption {
+	return func(o *consumerOptions) { o.rebalanceTimeout = d }
+}
+
 // NewConsumer joins group and subscribes to topics. The returned Consumer must
 // be closed.
-func NewConsumer(cfg config.Kafka, group string, topics []string, logger *slog.Logger) (*Consumer, error) {
-	cl, err := kgo.NewClient(
+func NewConsumer(cfg config.Kafka, group string, topics []string, logger *slog.Logger, opts ...ConsumerOption) (*Consumer, error) {
+	var o consumerOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	kopts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ConsumerGroup(group),
 		kgo.ConsumeTopics(topics...),
@@ -60,7 +90,12 @@ func NewConsumer(cfg config.Kafka, group string, topics []string, logger *slog.L
 		// two workers would be inside the same message at once — which the
 		// conditional claim would survive, but only by doing the work twice.
 		kgo.BlockRebalanceOnPoll(),
-	)
+	}
+	if o.rebalanceTimeout > 0 {
+		kopts = append(kopts, kgo.RebalanceTimeout(o.rebalanceTimeout))
+	}
+
+	cl, err := kgo.NewClient(kopts...)
 	if err != nil {
 		return nil, fmt.Errorf("mq: open consumer: %w", err)
 	}

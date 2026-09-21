@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,5 +198,64 @@ func TestNewMakesTheRootAbsoluteAndCreatesIt(t *testing.T) {
 func TestNewRejectsAnEmptyRoot(t *testing.T) {
 	if _, err := New("", 1<<20); err == nil {
 		t.Fatal("New accepted an empty root")
+	}
+}
+
+// TestOpenReadsBackWhatSaveWrote is the ingestion worker's path: the API writes
+// the file, and the worker on the other side of the shared volume reads it.
+func TestOpenReadsBackWhatSaveWrote(t *testing.T) {
+	s := newStorage(t, 1<<20)
+	if _, err := s.Save("01JDOC", "runbook.md", strings.NewReader("# Runbook\n")); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	f, err := s.Open("01JDOC", "runbook.md")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	got, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if string(got) != "# Runbook\n" {
+		t.Errorf("read %q", got)
+	}
+}
+
+// TestOpenRefusesToTraverse: this is the second function that turns stored
+// input into a path, so it defends itself rather than trusting the writer.
+// TestOpenDoesNotLeakTheStorageRoot: this error becomes a document's
+// failure_reason, which a user reads back through the API.
+func TestOpenDoesNotLeakTheStorageRoot(t *testing.T) {
+	s := newStorage(t, 1<<20)
+
+	_, err := s.Open("01JBQ8M0YB4C3D2E1F0G9H8J7K", "runbook.md")
+	if err == nil {
+		t.Fatal("Open succeeded on a file that was never written")
+	}
+	if strings.Contains(err.Error(), s.Root()) {
+		t.Errorf("err = %v, want it to name the document rather than the server's layout", err)
+	}
+	if !strings.Contains(err.Error(), "01JBQ8M0YB4C3D2E1F0G9H8J7K/runbook.md") {
+		t.Errorf("err = %v, want it to name the file the way the documents row does", err)
+	}
+}
+
+func TestOpenRefusesToTraverse(t *testing.T) {
+	s := newStorage(t, 1<<20)
+	cases := [][2]string{
+		{"..", "runbook.md"},
+		{"01JDOC", "../../etc/passwd"},
+		{"01JDOC", `..\..\secrets`},
+		{"", "runbook.md"},
+		{"01JDOC", ""},
+	}
+	for _, c := range cases {
+		if f, err := s.Open(c[0], c[1]); err == nil {
+			f.Close()
+			t.Errorf("Open(%q, %q) was allowed", c[0], c[1])
+		}
 	}
 }

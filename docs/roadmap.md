@@ -27,11 +27,11 @@ written, goldfish-tested and committed before those milestones are implemented.
 | --- | --- | --- |
 | **S2** | **Spec: `async-messaging-and-idempotency`** — message schemas, delivery semantics, lease reclaim and the reconciler | **done** |
 | M6 | Kafka (KRaft, single node) in Compose; `internal/mq` over franz-go; `documents.ingest.v1` and `agent.runs.v1`; at-least-once with database-level idempotency; lease reclaim and the reconciler; `ingestion-worker` with a placeholder handler; integration test for duplicate delivery | **done** |
-| **S3** | **Spec: `document-ingestion-pipeline`** — chunking strategy, Elasticsearch mapping, failure semantics | todo |
-| M7 | Markdown/TXT parser and heading-aware, token-bounded chunker. Pure functions, heavily unit tested | todo |
-| M8 | `internal/embed`: OpenAI-compatible embedding client for hosted `BAAI/bge-m3` (SiliconFlow), with batching, timeouts and bounded retries | todo |
-| M9 | Elasticsearch single node; chunk mapping with `dense_vector`; bulk index and delete-by-document | todo |
-| M10 | `ingestion-worker` end to end: the M6 placeholder handler is replaced with parse → chunk → embed → index → `READY`/`FAILED` | todo |
+| **S3** | **Spec: `document-ingestion-pipeline`** — chunking strategy, Elasticsearch mapping, failure semantics | **done** |
+| M7 | Markdown/TXT parser and heading-aware, token-bounded chunker. Pure functions, heavily unit tested | **done** |
+| M8 | `internal/embed`: OpenAI-compatible embedding client for hosted `BAAI/bge-m3` (SiliconFlow), with batching, timeouts and bounded retries | **done** |
+| M9 | Elasticsearch single node; chunk mapping with `dense_vector`; bulk index and delete-by-document | **done** |
+| M10 | `ingestion-worker` end to end: the M6 placeholder handler is replaced with parse → chunk → embed → index → `READY`/`FAILED` | **done** |
 | M11 | Dense kNN retrieval with metadata filtering; `GET /api/search` for debugging (Tier B) | todo |
 | M12 | Knowledge corpus in `testdata/knowledge/` (runbook, postmortem, service docs) and the evaluation set built from it; a repeatable Go test reporting Recall@1/3/5, baseline in `docs/rag-eval.md`. The corpus is written once here and reused by Phase C and the agent evaluation (Tier B) | todo |
 

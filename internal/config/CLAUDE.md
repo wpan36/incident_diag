@@ -14,11 +14,15 @@ anything partly valid. The environment is the only source: Compose supplies `.en
 - `config.go` — `Config` (`Env`, `LogLevel`, `HTTPAddr`) and `Load`, shared by every binary.
 - `database.go` — `Database` (DSN, pool sizes, connection lifetime) and `LoadDatabase`.
 - `httpserver.go` — `HTTPServer` (the five server timeouts) and `LoadHTTPServer`.
-- `documents.go` — `Documents` (storage root, upload cap), `LoadDocuments`, and
-  `DefaultDocumentStorageRoot`.
+- `documents.go` — `Documents` (storage root, upload cap, chunk target and per-document
+  chunk cap), `LoadDocuments`, and `DefaultDocumentStorageRoot`.
 - `kafka.go` — `Kafka` (seed brokers, produce timeout), `LoadKafka` and `splitList`.
-- `reconcile.go` — `Reconcile` (sweep interval, pending-after, batch, ingestion lease and
-  attempt limit) and `LoadReconcile`.
+- `reconcile.go` — `Reconcile` (sweep interval, pending-after, batch, ingestion lease,
+  attempt limit and the per-document timeout) and `LoadReconcile`.
+- `embedding.go` — `Embedding` (provider endpoint, key, model, batch size, timeout, retry
+  budget) and `LoadEmbedding`.
+- `search.go` — `Search` (Elasticsearch URL, index alias), `LoadSearch` and
+  `DefaultIndexAlias`.
 - `config_test.go` — unit tests for every loader. `isolate` blanks every variable any
   loader reads, so a developer's sourced `.env` cannot change a result. A new loader means
   adding its variables to that list, or its tests inherit the developer's shell.
@@ -39,9 +43,17 @@ timeouts.
 - **`Kafka.ProduceTimeout` is spent inside an HTTP request.** `POST /api/documents`
   produces before it answers, so this has to stay well below `HTTPServer.WriteTimeout` or
   an upload is cut off at the client while the handler is still waiting on a broker.
-- **`Reconcile` holds the two `INGEST_`-prefixed variables**, which reads oddly until you
+- **`Reconcile` holds the `INGEST_`-prefixed variables**, which reads oddly until you
   need them: the lease is what both `ClaimDocument` and the sweep mean by "abandoned", and
   they have to be the same value or the sweep re-enqueues rows the claim then refuses.
+- **`LoadReconcile` is the one loader that checks a relationship between two values**:
+  `INGEST_DOCUMENT_TIMEOUT` must be shorter than `INGEST_LEASE`, or a handler is still
+  working on a document another worker is already free to claim. It is validated here
+  rather than left to a comment, because both values live in this struct.
+- **The embedding dimensionality is deliberately not configurable.** It is a constant in
+  `internal/embed`, from which `internal/search` builds its mapping; a wrong environment
+  value would silently build a wrong mapping, which is the exact failure the dimension
+  check exists to catch.
 - **Every loader collects all its problems.** Never return early on the first bad value:
   an operator with three variables wrong should learn that in one restart. A binary
   calling several loaders still gets each one's complete list.

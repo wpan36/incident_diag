@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +120,39 @@ func (s *Storage) Save(documentID, filename string, r io.Reader) (Saved, error) 
 		Size:   n,
 		SHA256: hex.EncodeToString(sum.Sum(nil)),
 	}, nil
+}
+
+// Open opens a stored document file for reading. The caller closes it.
+//
+// It takes the two components separately rather than the stored path, and puts
+// each through checkName exactly as Save does, because this is the second
+// function in this package that turns stored input into a filesystem path. The
+// write path already defends against ".." and the Windows backslash spelling;
+// a read path that does not is a way back in. The caller has the documents row,
+// which carries both the id and the filename, so storage_path never has to be
+// parsed as a path by anything.
+func (s *Storage) Open(documentID, filename string) (*os.File, error) {
+	if err := checkName(documentID); err != nil {
+		return nil, fmt.Errorf("files: document id: %w", err)
+	}
+	if err := checkName(filename); err != nil {
+		return nil, fmt.Errorf("files: filename: %w", err)
+	}
+
+	f, err := os.Open(filepath.Join(s.root, documentID, filename))
+	if err != nil {
+		// Named the way the documents row names it, not the way the filesystem
+		// does. This error becomes a document's failure_reason, which a user
+		// reads back through GET /api/documents, and the storage root is the
+		// server's business rather than something to hand out with it.
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			return nil, fmt.Errorf("files: opening %s: %w",
+				filepath.Join(documentID, filename), pathErr.Err)
+		}
+		return nil, fmt.Errorf("files: opening the file: %w", err)
+	}
+	return f, nil
 }
 
 // Remove deletes everything stored for a document.

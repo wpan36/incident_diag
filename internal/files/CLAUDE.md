@@ -7,15 +7,15 @@ counting them as they stream in.
 
 ## Contents
 
-- `files.go` — `Storage` with `New`, `Root`, `MaxBytes`, `Save` and `Remove`; the `Saved`
-  result (`Path`, `Size`, `SHA256`); `ErrTooLarge`; and `checkName`.
+- `files.go` — `Storage` with `New`, `Root`, `MaxBytes`, `Save`, `Open` and `Remove`; the
+  `Saved` result (`Path`, `Size`, `SHA256`); `ErrTooLarge`; and `checkName`.
 - `files_test.go` — unit tests, including the traversal and oversize cases.
 
 ## How it fits in
 
 Separate from `internal/store` because the two answer to different failures: MySQL holds
-the metadata and the ingestion state, this holds the bytes. `api` writes through it; the
-ingestion worker will read the same shared volume using the same
+the metadata and the ingestion state, this holds the bytes. `api` writes through it with `Save`; the
+ingestion worker reads the same shared volume with `Open`, using the same
 `config.Documents.StorageRoot`.
 
 ## Gotchas
@@ -34,6 +34,13 @@ ingestion worker will read the same shared volume using the same
   truncating the document to exactly the cap. On `ErrTooLarge` it leaves nothing behind.
 - **The file is opened `O_EXCL`, not truncating.** A document id is generated per upload,
   so an existing file there means something is wrong and overwriting would hide it.
+- **`Open` takes the id and the filename separately, never `storage_path`.** It is the
+  second function here that turns stored input into a filesystem path, so it puts both
+  components through `checkName` exactly as `Save` does. A read path that trusts the
+  database where the write path does not is a way back in, and the caller has the row,
+  which carries both components. Its error names the file as `<id>/<filename>` rather than
+  letting `os.PathError` carry the absolute path: this error becomes a document's
+  `failure_reason`, which a user reads back through `GET /api/documents`.
 - **`checkName` is not redundant with the handler's validation.** This is the function that
   turns a name into a path, so it is the one place where being wrong lets an upload choose
   where it lands. `filepath.Base` is the test, plus an explicit backslash check for the

@@ -66,8 +66,12 @@ makes workers idempotent under at-least-once delivery.
 
 **Elasticsearch holds retrievable knowledge**, never authoritative state. A document's
 chunks can always be rebuilt from the original file plus MySQL metadata. Each chunk
-carries `document_id`, `chunk_id`, `service`, `document_type`, `source`, `content` and
-`embedding`.
+carries `document_id`, `chunk_id`, `chunk_index`, `service`, `document_type`, `source`,
+`heading_path`, `content`, `embedding` and `indexed_at`.
+
+Reads and writes go through the alias `chunks` rather than a concrete index, so changing
+the embedding model can be done by building a second index alongside the first and
+switching the alias, without retrieval going down for the reindex.
 
 **Redis Streams carries agent run events.** This data is deliberately disposable: streams
 are capped and expire. Losing it costs a live timeline, never a fact — the authoritative
@@ -94,7 +98,7 @@ POST /api/documents
              -> parse (Markdown / TXT)
              -> chunk (heading-aware, token-bounded)
              -> embed (OpenAI-compatible /v1/embeddings)
-             -> bulk index into Elasticsearch
+             -> bulk index through the chunks alias
         -> MySQL: status READY, or FAILED with a reason
 ```
 
