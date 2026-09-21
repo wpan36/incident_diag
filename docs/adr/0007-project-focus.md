@@ -63,9 +63,9 @@ and S7 for the agent runtime — had not been written yet, so the correction was
 
 ## Alternatives considered
 
-**Keep hybrid retrieval and cut something else.** It is a concrete, explainable piece of
-work and a reviewer with a search background would enjoy it. Rejected because the effort
-buys retrieval quality the evaluation set is too small to demonstrate convincingly anyway.
+**Keep hybrid retrieval and cut something else.** It is a self-contained piece of work with
+a clear measurement attached. Rejected because the effort buys retrieval quality that an
+evaluation set this small cannot demonstrate convincingly anyway.
 
 **Add sandboxed tool execution** — running restricted analysis scripts inside a disposable,
 network-less, read-only container. The most valuable addition considered, and the one this

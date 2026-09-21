@@ -10,11 +10,11 @@ ADR 0002 gave vLLM a real job — serving `BAAI/bge-m3` locally — on the groun
 6 GB laptop GPU could do embedding inference well even though it could not host a chat
 model worth building an agent against.
 
-That reasoning still holds on its own terms, but it optimized for the wrong thing. This is
-a portfolio project, and its most valuable property is that someone else can clone it and
-watch it work. Requiring an NVIDIA GPU means most people who open the repository cannot
-run it, and the local inference server is a substantial piece of the Compose stack that
-exists to demonstrate one skill rather than to make the product work.
+That reasoning still holds on its own terms, but it optimized for the wrong thing. The most
+valuable property this project has is that someone else can clone it and watch it work.
+Requiring an NVIDIA GPU means most people who open the repository cannot run it, and the
+local inference server is a substantial piece of the Compose stack that exists to
+demonstrate one skill rather than to make the product work.
 
 DeepSeek, which serves the chat model, has no embeddings endpoint, so removing vLLM still
 leaves RAG needing an embedding provider.

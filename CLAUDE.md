@@ -4,8 +4,8 @@ An agentic SRE diagnosis platform in Go. A user uploads internal runbooks and po
 files an incident, and a bounded read-only AI agent investigates it using RAG plus
 Prometheus, log and HTTP-probe tools, streaming its progress to the browser over SSE.
 
-It is a learning and portfolio project, not a commercial product. It must be genuinely
-runnable, testable and understandable — not a demo assembled to name-drop a stack.
+It is a learning project, not a commercial product. It must be genuinely runnable,
+testable and understandable — not a demo assembled to name-drop a stack.
 
 ## Start here
 
