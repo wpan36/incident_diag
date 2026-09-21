@@ -7,6 +7,13 @@ Prometheus, log and HTTP-probe tools, streaming its progress to the browser over
 It is a learning project, not a commercial product. It must be genuinely runnable,
 testable and understandable — not a demo assembled to name-drop a stack.
 
+**Prefer the simplest design that works.** Ask whether the simpler option fails in a way
+that matters in *this* system rather than in a hypothetical production one; ADR 0005
+already puts availability, multi-tenancy and scale out of scope. Build for the consumer
+that exists, not one a later milestone might add. Complexity that teaches something — the
+bounded agent loop, idempotent consumers, retrieval — earns its place; a mechanism that
+needs a page to justify usually does not.
+
 ## Start here
 
 New session? Read these, in this order:
