@@ -30,7 +30,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
 
@@ -252,33 +251,6 @@ func now() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 // A Prometheus range query can return megabytes, and an audit trail nobody can
 // read is not an audit trail. The number is a guess and should be revisited
 // once there is real tool output to look at.
-const summaryLimitBytes = 8 << 10 // 8 KiB
-
-// truncateSummary caps s at summaryLimitBytes bytes of UTF-8 and reports the
-// original length together with whether it was cut.
-//
-// The three results are returned together so no caller can record one without
-// the others — a stored summary whose byte count describes a different string
-// is worse than no byte count at all.
-//
-// The cut falls on a rune boundary at or below the cap, never inside a
-// multi-byte sequence. Slicing at a fixed byte offset would produce invalid
-// UTF-8, which a utf8mb4 column will reject or silently mangle, and tool output
-// contains non-ASCII text often enough for that to be a matter of when rather
-// than whether.
-func truncateSummary(s string) (summary string, length int, truncated bool) {
-	if len(s) <= summaryLimitBytes {
-		return s, len(s), false
-	}
-	cut := summaryLimitBytes
-	// s[cut] is the first byte that will be dropped. While it is a
-	// continuation byte the cut is inside a rune, so step back.
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut], len(s), true
-}
-
 // Page limits. The API validates the caller's limit against them; the store
 // trusts what it is given.
 const (

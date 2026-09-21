@@ -79,7 +79,7 @@ propose a commit message. Commits are made by the user, not automatically.
 ## Layout
 
 ```
-cmd/         api, migrate, ingestion-worker, agent-worker, ops-mcp, and the Incident Lab services
+cmd/         api, migrate, ingestion-worker, agent-worker, ops-mcp, lab-scenario, and the Incident Lab services
 internal/    the packages those binaries are built from
 migrations/  numbered SQL schema migrations, embedded into the binaries that apply them
 web/         single static HTML page, no build step

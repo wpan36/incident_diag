@@ -263,6 +263,43 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
 
+  # The agent's whole reach into the operational world. Everything it can do is
+  # what this server exposes, which is why it is a service of its own rather
+  # than a library inside the agent worker: the boundary is legible from this
+  # file.
+  #
+  # In the lab profile, because every target it can reach is in that profile.
+  ops-mcp:
+    profiles: [lab]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CMD: ops-mcp
+    container_name: ops-mcp
+    restart: unless-stopped
+    user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      HTTP_ADDR: ":8080"
+      # Container names, not the host ports: this reaches its targets across the
+      # compose network.
+      OPS_MCP_PROMETHEUS_URL: http://prometheus:9090
+      OPS_MCP_PROBE_TARGETS: checkout-service=http://checkout-service:8080,payment-service=http://payment-service:8080
+      OPS_MCP_LOG_ROOT: /var/log/lab
+      OPS_MCP_LOG_SERVICES: checkout-service,payment-service
+    ports:
+      - "${OPS_MCP_PORT:-8084}:8080"
+    volumes:
+      # Read-only. The lab services write these; this one only reads them, and
+      # the mount says so rather than trusting the code to.
+      - ./data/lab-logs:/var/log/lab:ro
+    depends_on:
+      - prometheus
+      - checkout-service
+      - payment-service
+
 volumes:
   mysql-data:
   # Unlike Kafka's log, the index is worth keeping across a restart. Its

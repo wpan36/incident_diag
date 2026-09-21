@@ -8,67 +8,12 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/httpx"
 )
-
-func TestTruncateSummaryLeavesShortInputAlone(t *testing.T) {
-	const in = "cpu usage 94% on payment-service-7d9f"
-	got, length, truncated := truncateSummary(in)
-	if got != in || length != len(in) || truncated {
-		t.Fatalf("truncateSummary = %q, %d, %v; want the input unchanged", got, length, truncated)
-	}
-}
-
-func TestTruncateSummaryIsRuneSafe(t *testing.T) {
-	// A three-byte rune straddling the cap is the case a naive s[:limit] gets
-	// wrong: it would cut the sequence in half and produce invalid UTF-8 that
-	// a utf8mb4 column rejects or silently mangles.
-	//
-	// 8190 bytes of ASCII put the next rune's first byte at 8190, its second at
-	// 8191 and its third at 8192 — one past the cap.
-	head := strings.Repeat("a", summaryLimitBytes-2)
-	in := head + "世" + strings.Repeat("b", 100)
-
-	got, length, truncated := truncateSummary(in)
-
-	if !truncated {
-		t.Fatal("truncated = false, want true")
-	}
-	if length != len(in) {
-		t.Fatalf("length = %d, want the pre-truncation length %d", length, len(in))
-	}
-	if !utf8.ValidString(got) {
-		t.Fatal("the truncated summary is not valid UTF-8")
-	}
-	if got != head {
-		t.Fatalf("summary = %q..., want the straddling rune dropped entirely", got[len(got)-10:])
-	}
-	if len(got) > summaryLimitBytes {
-		t.Fatalf("len(summary) = %d, want at most %d", len(got), summaryLimitBytes)
-	}
-}
-
-func TestTruncateSummaryCutsExactlyAtTheCapWhenItCan(t *testing.T) {
-	in := strings.Repeat("a", summaryLimitBytes+1)
-	got, length, truncated := truncateSummary(in)
-	if !truncated || len(got) != summaryLimitBytes || length != len(in) {
-		t.Fatalf("truncateSummary = len %d, %d, %v; want len %d, %d, true",
-			len(got), length, truncated, summaryLimitBytes, len(in))
-	}
-}
-
-func TestTruncateSummaryAtTheBoundary(t *testing.T) {
-	in := strings.Repeat("a", summaryLimitBytes)
-	got, length, truncated := truncateSummary(in)
-	if truncated || len(got) != summaryLimitBytes || length != summaryLimitBytes {
-		t.Fatalf("a string of exactly the cap was truncated: len %d, %d, %v", len(got), length, truncated)
-	}
-}
 
 func TestPaginate(t *testing.T) {
 	idOf := func(s string) string { return s }

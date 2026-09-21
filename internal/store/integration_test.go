@@ -27,6 +27,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/httpx"
 	"github.com/wpan36/incident_diag/internal/id"
+	"github.com/wpan36/incident_diag/internal/summary"
 	"github.com/wpan36/incident_diag/migrations"
 )
 
@@ -704,7 +705,7 @@ func TestTruncationIsRecordedOnTheRow(t *testing.T) {
 	// Deliberately non-ASCII so the stored value has to be valid UTF-8 for
 	// MySQL to accept it into a utf8mb4 column.
 	long := ""
-	for len(long) < summaryLimitBytes+512 {
+	for len(long) < summary.LimitBytes+512 {
 		long += "世界 "
 	}
 
@@ -727,7 +728,7 @@ func TestTruncationIsRecordedOnTheRow(t *testing.T) {
 	if !stored.Truncated || stored.ObservationBytes != len(long) {
 		t.Fatalf("stored = truncated %v, %d bytes; want true, %d", stored.Truncated, stored.ObservationBytes, len(long))
 	}
-	if stored.Observation == nil || len(*stored.Observation) > summaryLimitBytes {
+	if stored.Observation == nil || len(*stored.Observation) > summary.LimitBytes {
 		t.Fatalf("stored summary exceeds the cap")
 	}
 	if *stored.Observation != long[:len(*stored.Observation)] {

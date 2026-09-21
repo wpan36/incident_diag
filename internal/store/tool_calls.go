@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wpan36/incident_diag/internal/id"
+	"github.com/wpan36/incident_diag/internal/summary"
 )
 
 // Tool call outcomes. TIMEOUT is separate from ERROR because a tool that ran
@@ -64,7 +65,7 @@ func scanToolCall(s scanner) (ToolCall, error) {
 
 // CreateToolCall records one tool invocation.
 func (s *Store) CreateToolCall(ctx context.Context, in NewToolCall) (ToolCall, error) {
-	summary, length, truncated := truncateSummary(in.Result)
+	text, length, truncated := summary.Cap(in.Result)
 
 	tc := ToolCall{
 		ID:          id.New(),
@@ -78,8 +79,8 @@ func (s *Store) CreateToolCall(ctx context.Context, in NewToolCall) (ToolCall, e
 		DurationMS:  int(in.Duration.Milliseconds()),
 		CreatedAt:   now(),
 	}
-	if summary != "" {
-		tc.Result = &summary
+	if text != "" {
+		tc.Result = &text
 	}
 	if in.Error != "" {
 		tc.Error = &in.Error

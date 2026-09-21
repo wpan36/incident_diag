@@ -66,11 +66,11 @@ Specified by S6, which is written at the top of Phase C.
 
 | | Milestone | Status |
 | --- | --- | --- |
-| M16 | `ops-mcp` skeleton: official MCP Go SDK, streamable HTTP, tool registry, allowlist configuration; own container | todo |
-| M17 | `prometheus_query` (Tier B): instant and range queries, validation, LLM-friendly result summarization | todo |
-| M18 | `http_probe` (Tier B): strict host allowlist, forced timeout, truncated body | todo |
-| M19 | `read_service_logs` (Tier B): reads the log format S6 defines; takes a service name rather than a path, so there is no traversal to defend against; filters by time window, minimum level and substring | todo |
-| M20 | MCP client and tool adapter in the main application; unit tested against a fake MCP server | todo |
+| M16 | `ops-mcp` skeleton: official MCP Go SDK, streamable HTTP, tool registry, allowlist configuration; own container | **done** |
+| M17 | `prometheus_query` (Tier B): instant and range queries, validation, LLM-friendly result summarization | **done** |
+| M18 | `http_probe` (Tier B): strict host allowlist, forced timeout, truncated body | **done** |
+| M19 | `read_service_logs` (Tier B): reads the log format S6 defines; takes a service name rather than a path, so there is no traversal to defend against; filters by time window, minimum level and substring | **done** |
+| M20 | MCP client and tool adapter in the main application; unit tested against a fake MCP server | **done** |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 

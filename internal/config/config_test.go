@@ -599,3 +599,125 @@ func TestLoadPaymentRejectsAnEmptyPool(t *testing.T) {
 		t.Errorf("error = %v, want it to name PAYMENT_POOL_SIZE", err)
 	}
 }
+
+// isolateOpsMCP clears the variables LoadOpsMCP reads.
+func isolateOpsMCP(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"OPS_MCP_PROMETHEUS_URL", "OPS_MCP_PROBE_TARGETS", "OPS_MCP_LOG_ROOT",
+		"OPS_MCP_LOG_SERVICES", "OPS_MCP_PROMETHEUS_TIMEOUT", "OPS_MCP_MAX_RANGE",
+		"OPS_MCP_MIN_STEP", "OPS_MCP_MAX_SERIES", "OPS_MCP_PROBE_TIMEOUT",
+		"OPS_MCP_PROBE_BODY_BYTES", "OPS_MCP_MAX_LOG_LINES",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+func validOpsMCP(t *testing.T) {
+	t.Helper()
+	isolateOpsMCP(t)
+	t.Setenv("OPS_MCP_PROMETHEUS_URL", "http://prometheus:9090")
+	t.Setenv("OPS_MCP_PROBE_TARGETS", "checkout-service=http://checkout-service:8080,payment-service=http://payment-service:8080")
+	t.Setenv("OPS_MCP_LOG_ROOT", "/var/log/lab")
+	t.Setenv("OPS_MCP_LOG_SERVICES", "checkout-service,payment-service")
+}
+
+func TestLoadOpsMCP(t *testing.T) {
+	validOpsMCP(t)
+
+	c, err := LoadOpsMCP()
+	if err != nil {
+		t.Fatalf("LoadOpsMCP: %v", err)
+	}
+	if c.ProbeTargets["payment-service"] != "http://payment-service:8080" {
+		t.Errorf("targets = %v", c.ProbeTargets)
+	}
+	if len(c.LogServices) != 2 {
+		t.Errorf("log services = %v", c.LogServices)
+	}
+	if c.MaxSeries != defaultMaxSeries || c.MinStep != defaultMinStep {
+		t.Errorf("defaults not applied: %+v", c)
+	}
+}
+
+func TestLoadOpsMCPReportsEveryProblemAtOnce(t *testing.T) {
+	isolateOpsMCP(t)
+
+	_, err := LoadOpsMCP()
+	if err == nil {
+		t.Fatal("LoadOpsMCP succeeded with nothing set")
+	}
+	for _, want := range []string{
+		"OPS_MCP_PROMETHEUS_URL", "OPS_MCP_PROBE_TARGETS",
+		"OPS_MCP_LOG_ROOT", "OPS_MCP_LOG_SERVICES",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %s: %v", want, err)
+		}
+	}
+}
+
+func TestLoadOpsMCPRejectsABadTargetList(t *testing.T) {
+	cases := map[string]string{
+		"payment-service":           "must be name=url",
+		"payment-service=":          "must be name=url",
+		"=http://x:8080":            "must be name=url",
+		"payment-service=notaurl":   "must be http or https",
+		"payment-service=ftp://x":   "must be http or https",
+		"payment-service=http://":   "must name a host",
+		"a=http://x:1,a=http://y:2": "twice",
+	}
+	for raw, want := range cases {
+		validOpsMCP(t)
+		t.Setenv("OPS_MCP_PROBE_TARGETS", raw)
+
+		// A malformed entry fails startup rather than being skipped: a probe
+		// target that quietly went missing looks to the agent like a service
+		// that does not exist, which is much harder to notice.
+		_, err := LoadOpsMCP()
+		if err == nil {
+			t.Errorf("%q was accepted", raw)
+			continue
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: error = %v, want it to mention %q", raw, err, want)
+		}
+	}
+}
+
+func TestLoadOpsMCPRejectsNonPositiveLimits(t *testing.T) {
+	for _, key := range []string{
+		"OPS_MCP_MAX_SERIES", "OPS_MCP_PROBE_BODY_BYTES", "OPS_MCP_MAX_LOG_LINES",
+	} {
+		validOpsMCP(t)
+		t.Setenv(key, "0")
+		if _, err := LoadOpsMCP(); err == nil {
+			t.Errorf("%s=0 was accepted", key)
+		}
+	}
+	for _, key := range []string{
+		"OPS_MCP_PROMETHEUS_TIMEOUT", "OPS_MCP_MAX_RANGE", "OPS_MCP_MIN_STEP", "OPS_MCP_PROBE_TIMEOUT",
+	} {
+		validOpsMCP(t)
+		t.Setenv(key, "0s")
+		if _, err := LoadOpsMCP(); err == nil {
+			t.Errorf("%s=0s was accepted", key)
+		}
+	}
+}
+
+func TestOpsMCPStringNamesWhatTheAgentCanReach(t *testing.T) {
+	validOpsMCP(t)
+	c, err := LoadOpsMCP()
+	if err != nil {
+		t.Fatalf("LoadOpsMCP: %v", err)
+	}
+	// "Which services can the agent reach" is the first question anyone asks of
+	// this process, so the startup line answers it.
+	got := c.String()
+	for _, want := range []string{"checkout-service,payment-service", "log_root=/var/log/lab"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("String() = %q, missing %q", got, want)
+		}
+	}
+}

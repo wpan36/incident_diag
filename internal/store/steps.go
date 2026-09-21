@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wpan36/incident_diag/internal/id"
+	"github.com/wpan36/incident_diag/internal/summary"
 )
 
 // Action types: what the agent decided to do on a step.
@@ -75,7 +76,7 @@ func scanStep(s scanner) (Step, error) {
 // an internal error rather than a conflict: nothing a client does can cause it,
 // so it is a bug in the agent loop and belongs in the logs as a 500.
 func (s *Store) CreateStep(ctx context.Context, in NewStep) (Step, error) {
-	summary, length, truncated := truncateSummary(in.Observation)
+	text, length, truncated := summary.Cap(in.Observation)
 
 	st := Step{
 		ID:               id.New(),
@@ -89,8 +90,8 @@ func (s *Store) CreateStep(ctx context.Context, in NewStep) (Step, error) {
 		DurationMS:       int(in.Duration.Milliseconds()),
 		CreatedAt:        now(),
 	}
-	if summary != "" {
-		st.Observation = &summary
+	if text != "" {
+		st.Observation = &text
 	}
 	if in.Error != "" {
 		st.Error = &in.Error
