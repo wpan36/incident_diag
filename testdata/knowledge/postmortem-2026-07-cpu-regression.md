@@ -14,8 +14,8 @@ and visible only as a breached objective.
 
 02:10 — A deployment added per-request signature verification to the authorization path.
 
-02:14 — CPU usage per replica rose from 40% to 94% as a step change.
-`container_cpu_cfs_throttled_seconds_total` began climbing.
+02:14 — `rate(process_cpu_seconds_total{job="payment-service"}[5m])` rose from 0.4 to 0.94
+as a step change, and `container_cpu_cfs_throttled_seconds_total` began climbing.
 
 02:31 — `PaymentServiceLatencyHigh` fired. The on-call engineer checked the pool first,
 found the in-use ratio at its usual 0.4, and moved on.

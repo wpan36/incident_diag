@@ -115,6 +115,16 @@ func runClose(ctx context.Context, c closer) error {
 	done := make(chan error, 1) // buffered so an abandoned goroutine can still exit
 	go func() { done <- c.fn(ctx) }()
 
+	// Checked before the select, not left to it. Once the shared deadline has
+	// passed, both cases below are ready and select picks between them at
+	// random, so an instant closer would be reported as incomplete or as
+	// successful depending on scheduling. Close documents that closers reached
+	// after the deadline are reported as incomplete, and this is what makes
+	// that true rather than likely.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("closing %s: %w", c.name, err)
+	}
+
 	select {
 	case err := <-done:
 		if err != nil {

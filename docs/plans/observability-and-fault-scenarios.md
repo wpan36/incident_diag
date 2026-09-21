@@ -24,7 +24,15 @@ enabled, which erases the difference between a healthy baseline and an incident.
 | Runbook text | What M14 must produce |
 | --- | --- |
 | "p99 of `http_request_duration_seconds` for checkout-service" | `job="checkout-service"` |
+| `rate(process_cpu_seconds_total{job="checkout-service"}[5m])` | `job="checkout-service"` |
 | `container_cpu_usage_seconds_total` "for checkout-service" | cAdvisor's `name="checkout-service"` |
+
+The corpus leads with `process_cpu_seconds_total` and treats the cAdvisor metrics as the
+better signal where they exist. That was changed after M15: cAdvisor is empty on a daemon
+using the containerd image store, which made the CPU scenario undiagnosable on the machine
+this was developed on even though the fault was plainly working. `process_cpu_seconds_total`
+comes from client_golang in the service itself, carries the same `job` label as everything
+else, and is therefore always present.
 
 So the Prometheus job name **is** the service name, and the two lab containers get
 `container_name: checkout-service` and `container_name: payment-service` — cAdvisor labels
@@ -170,7 +178,9 @@ actually cares about, and a dashboard built against the lab alone would be rebui
   and the cancelled path.
 - Smoke: `make up-lab`, then `lab-scenario payment-latency`, and check the printed report
   shows the chain; then the same query in Prometheus with `job="payment-service"`, and
-  `container_cpu_usage_seconds_total{name="checkout-service"}` after `checkout-cpu`.
+  `rate(process_cpu_seconds_total{job="checkout-service"}[1m])` after `checkout-cpu` —
+  plus `container_cpu_usage_seconds_total{name="checkout-service"}` where cAdvisor has
+  data, which is not everywhere.
 
 ## Known limitations, accepted
 

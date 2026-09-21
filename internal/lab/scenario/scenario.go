@@ -98,7 +98,8 @@ func All() []Scenario {
 			Name:    "checkout-cpu",
 			Summary: "checkout-service saturates its own CPU",
 			Expect: "latency rises on POST /orders and on GET /orders/:id, which calls nothing downstream; " +
-				"payment-service is untouched; container_cpu_cfs_throttled_seconds_total rises for checkout-service",
+				"payment-service is untouched; rate(process_cpu_seconds_total{job=\"checkout-service\"}[1m]) rises, " +
+				"and container_cpu_cfs_throttled_seconds_total does too where cAdvisor has data",
 			Runbook: "cpu-saturation-runbook.md, and the CPU section of checkout-latency-runbook.md",
 			Fault: func(p Params) faultCall {
 				return faultCall{target: targetCheckout, body: map[string]any{

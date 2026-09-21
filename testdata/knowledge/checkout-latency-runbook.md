@@ -31,9 +31,10 @@ share is not small: the top decile of authorizations routinely takes 600 to 700m
 
 ## Diagnosis: checkout's own CPU
 
-Check `container_cpu_usage_seconds_total` and `container_cpu_cfs_throttled_seconds_total`
-for checkout-service. Order serialization is CPU-heavy and a basket with hundreds of lines
-can saturate a replica with no downstream involvement at all.
+Check `rate(process_cpu_seconds_total{job="checkout-service"}[5m])`, and
+`container_cpu_usage_seconds_total` as well when cAdvisor has data. Order serialization is
+CPU-heavy and a basket with hundreds of lines can saturate a replica with no downstream
+involvement at all.
 
 The distinguishing signal is uniformity. CPU saturation raises latency on every endpoint at
 once, including ones that never call payment-service. A downstream problem raises latency

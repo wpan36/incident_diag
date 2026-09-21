@@ -2,9 +2,14 @@
 
 ## Symptoms
 
-`container_cpu_usage_seconds_total` approaches the replica's limit and throttling appears
-in `container_cpu_cfs_throttled_seconds_total`. Latency rises across every endpoint at
-once, including endpoints that call nothing downstream.
+`rate(process_cpu_seconds_total{job="<service>"}[5m])` approaches the replica's CPU
+allowance. Latency rises across every endpoint at once, including endpoints that call
+nothing downstream.
+
+`container_cpu_usage_seconds_total` and `container_cpu_cfs_throttled_seconds_total` say the
+same thing from the container's side and are better when they are available, but they come
+from cAdvisor and are empty on some hosts. The per-process rate is exported by the service
+itself and is always there, so start with it.
 
 The uniformity is the signal. A slow dependency raises latency only on the routes that use
 it, so a service whose health endpoint has also slowed down is not waiting on anything — it
