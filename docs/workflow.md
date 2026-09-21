@@ -101,6 +101,16 @@ Seven Tier A specs are planned; see `docs/roadmap.md`. A spec's tier is re-check
 against the criteria above whenever an earlier decision changes what that spec still
 contains — see ADR 0008.
 
+## CI
+
+`.github/workflows/ci.yml` runs `make check`, builds every binary, and fails if `go mod
+tidy` would change anything. It is the same gate the milestone checklist uses.
+
+It does not run the integration tests. Those need MySQL, Kafka, Elasticsearch and an
+embedding key, and they skip cleanly when those are absent — so adding them without
+standing the whole stack up would mean a green CI that tested nothing, which is worse than
+not running them.
+
 ## Every milestone ends the same way
 
 1. `make check` — gofmt, `go vet`, `go test`, `go test -race`

@@ -1,0 +1,44 @@
+# The same gate the milestone checklist uses, run on every push.
+#
+# It deliberately runs only `make check` — gofmt, vet, test and test -race —
+# which needs no infrastructure. The integration tests need MySQL, Kafka,
+# Elasticsearch and an embedding API key, and they are written to skip cleanly
+# when those are absent, so adding them here would mean either standing the
+# whole stack up in CI or watching them silently skip and report success. The
+# second is worse than not running them at all.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version comes from go.mod, so CI cannot drift from what the
+      # Makefile and the Dockerfile build with.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: make check
+        run: make check
+
+      # Every binary, including the ones with no tests: `go test ./...` compiles
+      # test packages, not main packages, so a cmd/ that stopped building would
+      # otherwise reach main.
+      - name: build every binary
+        run: go build ./...
+
+      # A go.mod that tidy would change means a dependency is recorded wrongly —
+      # an unused require, or one marked indirect that is imported directly.
+      # Both are the kind of thing nobody notices locally.
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
