@@ -1,6 +1,6 @@
 # Roadmap
 
-34 implementation milestones across 7 phases, plus 9 Tier A specs. See
+34 implementation milestones across 7 phases, plus 7 Tier A specs. See
 `docs/workflow.md` for what Tier A and Tier B mean and how each milestone is executed.
 
 **Status legend:** `done` · `in progress` · `todo`
@@ -32,9 +32,8 @@ written, goldfish-tested and committed before those milestones are implemented.
 | M8 | `internal/embed`: OpenAI-compatible embedding client for hosted `BAAI/bge-m3` (SiliconFlow), with batching, timeouts and bounded retries | todo |
 | M9 | Elasticsearch single node; chunk mapping with `dense_vector`; bulk index and delete-by-document | todo |
 | M10 | `ingestion-worker` end to end: the M6 placeholder handler is replaced with parse → chunk → embed → index → `READY`/`FAILED` | todo |
-| **S4** | **Spec: `retrieval-and-evaluation`** — retrieval interface and evaluation method | todo |
-| M11 | Dense kNN retrieval with metadata filtering; `GET /api/search` for debugging | todo |
-| M12 | Knowledge corpus in `testdata/knowledge/` (runbook, postmortem, service docs) and the evaluation set built from it; a repeatable Go test reporting Recall@1/3/5, baseline in `docs/rag-eval.md`. The corpus is written once here and reused by Phase C and the agent evaluation | todo |
+| M11 | Dense kNN retrieval with metadata filtering; `GET /api/search` for debugging (Tier B) | todo |
+| M12 | Knowledge corpus in `testdata/knowledge/` (runbook, postmortem, service docs) and the evaluation set built from it; a repeatable Go test reporting Recall@1/3/5, baseline in `docs/rag-eval.md`. The corpus is written once here and reused by Phase C and the agent evaluation (Tier B) | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 
@@ -42,22 +41,23 @@ written, goldfish-tested and committed before those milestones are implemented.
 
 | | Milestone | Status |
 | --- | --- | --- |
-| **S5** | **Spec: `incident-lab-and-log-contract`** — fault injection model and the structured log format that `read_service_logs` consumes | todo |
-| M13 | `checkout-service` → `payment-service`, each with a business endpoint, `/health`, `/metrics`, and `/fault` injecting latency, 5xx and CPU load; structured JSON logs to a mounted directory | todo |
-| M14 | Prometheus scraping both services; Grafana with a provisioned datasource | todo |
-| M15 | Fault scenarios: a script reproducing the payment-service latency incident and the other injectable faults, against the corpus M12 already wrote | todo |
+| **S6** | **Spec: `mcp-tool-boundary`** — tool interfaces, read-only guarantees, the allowlist model, and the structured log format `read_service_logs` consumes. **Written here, one phase ahead of the milestones it gates**, because M13 emits that log format and M19 reads it; defining it once, before either exists, is why it moved | todo |
+| M13 | `checkout-service` → `payment-service`, each with a business endpoint, `/health`, `/metrics`, and `/fault` injecting latency, 5xx and CPU load; structured JSON logs to a mounted directory, in the format S6 defines (Tier B) | todo |
+| M14 | Prometheus scraping both services; Grafana with a provisioned datasource (Tier B) | todo |
+| M15 | Fault scenarios: a script reproducing the payment-service latency incident and the other injectable faults, against the corpus M12 already wrote (Tier B) | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 
 ## Phase D — MCP tool layer
 
+Specified by S6, which is written at the top of Phase C.
+
 | | Milestone | Status |
 | --- | --- | --- |
-| **S6** | **Spec: `mcp-tool-boundary`** — tool interfaces, read-only guarantees, allowlist model | todo |
 | M16 | `ops-mcp` skeleton: official MCP Go SDK, streamable HTTP, tool registry, allowlist configuration; own container | todo |
 | M17 | `prometheus_query` (Tier B): instant and range queries, validation, LLM-friendly result summarization | todo |
 | M18 | `http_probe` (Tier B): strict host allowlist, forced timeout, truncated body | todo |
-| M19 | `read_service_logs` (Tier B): jailed to configured directories with explicit symlink and `..` escape tests; filters by service, time window, pattern and line cap | todo |
+| M19 | `read_service_logs` (Tier B): reads the log format S6 defines; jailed to configured directories with explicit symlink and `..` escape tests; filters by service, time window, pattern and line cap | todo |
 | M20 | MCP client and tool adapter in the main application; unit tested against a fake MCP server | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.

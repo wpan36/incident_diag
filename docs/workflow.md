@@ -79,7 +79,9 @@ re-argued each time.
 contract: adding another MCP tool, wiring a Grafana dashboard, writing a demo service,
 building a front-end page. The spec is a half page in `docs/plans/`; no goldfish test.
 
-Nine Tier A specs are planned; see `docs/roadmap.md`.
+Seven Tier A specs are planned; see `docs/roadmap.md`. A spec's tier is re-checked
+against the criteria above whenever an earlier decision changes what that spec still
+contains — see ADR 0008.
 
 ## Every milestone ends the same way
 
