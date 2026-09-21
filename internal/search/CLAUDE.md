@@ -11,8 +11,11 @@ performs.
   with its bulk retry, `DeleteByDocument`; the `Chunk` document, `ChunkID`, `BulkItemError`.
 - `retrieve.go` — `Search`, `Query`, `Result`, `searchBody` and `clampK`; `DefaultK` and
   `MaxK`.
-- `search_test.go`, `retrieve_test.go` — unit tests against a fake cluster, and the request
-  body and clamping as pure functions.
+- `search_test.go`, `retrieve_test.go` — unit tests against a fake cluster (`clientFor`),
+  plus the request body and clamping as pure functions. The fake is what makes the replies a
+  real cluster almost never produces testable: a bulk request that answers 200 with its
+  failures inside the body, a delete-by-query that deleted nothing, and a search that reports
+  a failed shard.
 - `integration_test.go` — the alias state table, kNN, and delete-by-document against real
   Elasticsearch.
 

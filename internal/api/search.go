@@ -3,7 +3,6 @@ package api
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -27,13 +26,11 @@ const maxQueryLen = 1024
 func (s *Server) search(c *gin.Context) {
 	var v validation
 
-	q := strings.TrimSpace(c.Query("q"))
-	switch {
-	case q == "":
-		v.add("q", httpx.CodeRequired, "q is required")
-	case len(q) > maxQueryLen:
-		v.add("q", httpx.CodeTooLong, "q must be at most "+itoa(maxQueryLen)+" characters")
-	}
+	// requiredText rather than a check of its own: it trims before deciding
+	// the query is absent, and it counts characters. A bespoke len() here
+	// would have told a client that a 400-character Chinese question was
+	// longer than 1024 characters.
+	q := v.requiredText("q", c.Query("q"), maxQueryLen)
 
 	var query search.Query
 	if raw, ok := c.GetQuery("service"); ok {

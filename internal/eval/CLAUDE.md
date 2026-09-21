@@ -44,6 +44,11 @@ evaluation rather than for retrieval.
 - **The report lists queries answered but not first, separately from outright misses.** With
   a corpus this small the larger cutoffs saturate, and then the rank of the first hit is the
   only signal that still moves.
+- **The floor is asserted under Recall@1, not only under the largest cutoff.** With this
+  corpus Recall@3 and Recall@5 are saturated at 1.00, so a floor under those alone catches a
+  collapse and nothing else — Recall@1 could fall from 0.81 to zero with the build still
+  green. `recallFloors` holds one floor per cutoff and the test fails if a cutoff it names is
+  not among the ones reported.
 - **The integration test builds its own index behind a unique alias** and never touches the
   production `chunks` alias, which accumulates chunks from manual smoke tests. An evaluation
   whose corpus is whatever happens to be lying around measures nothing.

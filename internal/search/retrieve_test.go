@@ -3,6 +3,8 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -138,5 +140,93 @@ func TestClampK(t *testing.T) {
 		if got := clampK(in); got != want {
 			t.Errorf("clampK(%d) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+// searchReply renders a search response with the given number of failed shards
+// and one hit per chunk, scored in descending order.
+//
+// The hits carry their embedding although the real cluster leaves it out of
+// _source for this query. That is the point: Search clears the field rather
+// than trusting that the request asked for it to be absent.
+func searchReply(t *testing.T, failedShards int, chunks ...Chunk) string {
+	t.Helper()
+
+	hits := make([]string, 0, len(chunks))
+	for i, chunk := range chunks {
+		source, err := json.Marshal(chunk)
+		if err != nil {
+			t.Fatalf("encoding the fake hit: %v", err)
+		}
+		hits = append(hits, fmt.Sprintf(`{"_score":%v,"_source":%s}`, 0.9-0.1*float64(i), source))
+	}
+	return fmt.Sprintf(`{"_shards":{"total":2,"failed":%d},"hits":{"hits":[%s]}}`,
+		failedShards, strings.Join(hits, ","))
+}
+
+// TestSearchFailsWhenAShardFailed is the reply no integration test can provoke
+// and no status line reveals: Elasticsearch answers 200 and names the failed
+// shard inside the body.
+//
+// An incomplete retrieval answered as a complete one is the failure that shows
+// up much later as a diagnosis that missed the obvious runbook, so it has to be
+// an error rather than a short result.
+func TestSearchFailsWhenAShardFailed(t *testing.T) {
+	c := clientFor(t, func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, searchReply(t, 1, testChunk(0)))
+	})
+
+	results, err := c.Search(context.Background(), testVector(), Query{})
+	if err == nil {
+		t.Fatalf("a search with a failed shard returned %d results and no error", len(results))
+	}
+	if !strings.Contains(err.Error(), "1 of 2 shards failed") {
+		t.Errorf("error = %v, want it to name how many shards failed", err)
+	}
+}
+
+func TestSearchDecodesHitsAndClearsTheEmbedding(t *testing.T) {
+	c := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		// Every read goes through the alias, never a concrete index.
+		if r.URL.Path != "/chunks/_search" {
+			t.Errorf("searched %q, want the alias", r.URL.Path)
+		}
+		fmt.Fprint(w, searchReply(t, 0, testChunk(0), testChunk(1)))
+	})
+
+	results, err := c.Search(context.Background(), testVector(), Query{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if results[0].ChunkID != testChunk(0).ChunkID || results[0].Content != "chunk 0" {
+		t.Errorf("first result = %+v", results[0])
+	}
+	if results[0].Score != 0.9 {
+		t.Errorf("Score = %v, want the cluster's 0.9", results[0].Score)
+	}
+	for _, r := range results {
+		if r.Embedding != nil {
+			t.Errorf("result %s carries its embedding back to the caller", r.ChunkID)
+		}
+	}
+}
+
+func TestSearchReportsWhatTheClusterSaid(t *testing.T) {
+	c := clientFor(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":{"type":"search_phase_execution_exception","reason":"all shards failed"}}`)
+	})
+
+	_, err := c.Search(context.Background(), testVector(), Query{})
+	if err == nil {
+		t.Fatal("a 500 from the cluster was not an error")
+	}
+	// The status and the body both, because "search failed" on its own sends
+	// the reader back to the cluster to find out what it said.
+	if !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "all shards failed") {
+		t.Errorf("error = %v, want it to carry the status and the reason", err)
 	}
 }

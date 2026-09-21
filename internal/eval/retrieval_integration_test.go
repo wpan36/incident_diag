@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,14 +38,26 @@ const corpusDir = "../../testdata/knowledge"
 // get; Recall@5 is closer to what the agent will actually be handed.
 var ks = []int{1, 3, 5}
 
-// recallFloor fails the build on a collapse without pinning an exact score.
+// recallFloors is the floor asserted at each cutoff, and Recall@1 is the one
+// that does the work.
 //
-// The embedding model is hosted and its behaviour can drift, so asserting a
-// precise number would make this test fail for reasons that are not this
-// project's. A floor still catches the failures worth catching: a broken query
-// body, an empty index, a mapping change that silently stopped indexing the
-// vector.
-const recallFloor = 0.70
+// With a corpus this small the larger cutoffs saturate: asking for five of
+// twenty-four chunks and requiring one to be relevant is not a demanding test,
+// and Recall@5 sat at 1.00 the day it was written. A floor there catches only a
+// collapse — an empty index, a broken query body, a mapping change that stopped
+// indexing the vector — and would let Recall@1 fall from 0.81 to nothing
+// without turning the build red. Recall@1 is what a single-shot retrieval gets
+// and is the number `docs/rag-eval.md` says to compare against, so it is the
+// number with a floor under it.
+//
+// Both are floors rather than exact scores because the embedding model is
+// hosted and can drift, and a test that fails for the provider's reasons is a
+// test people learn to ignore. 0.60 leaves room under the recorded 0.81 for
+// that drift while still failing on a regression that halves the metric.
+var recallFloors = map[int]float64{
+	1: 0.60,
+	5: 0.70,
+}
 
 // chunkingForEval matches the production defaults. The evaluation exercises the
 // shipped chunker rather than a fixture, so a chunking change shows up here as
@@ -116,9 +129,20 @@ func TestRetrievalRecall(t *testing.T) {
 	report := eval.Report(outcomes, ks)
 	t.Logf("\n%s", report)
 
+	// A floor at a cutoff that is not reported would never be asserted, which
+	// is the failure this loop exists to avoid rather than to reproduce.
+	for k := range recallFloors {
+		if !slices.Contains(ks, k) {
+			t.Fatalf("Recall@%d has a floor but is not among the reported cutoffs %v", k, ks)
+		}
+	}
 	for _, k := range ks {
-		if got := eval.RecallAt(outcomes, k); k == maxK(ks) && got < recallFloor {
-			t.Errorf("Recall@%d = %.2f, below the floor of %.2f", k, got, recallFloor)
+		floor, asserted := recallFloors[k]
+		if !asserted {
+			continue
+		}
+		if got := eval.RecallAt(outcomes, k); got < floor {
+			t.Errorf("Recall@%d = %.2f, below the floor of %.2f", k, got, floor)
 		}
 	}
 }

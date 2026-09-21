@@ -102,7 +102,10 @@ problem — ten documents, ten chunks — and was rewritten to realistic length 
 changing the chunker, because tuning the chunker to make an evaluation look better is
 backwards.
 
-**The floor is 0.70 at k=5, not an exact score.** The embedding model is hosted and can
-drift, so pinning a precise number would make the test fail for reasons that are not this
-project's. The floor still catches what is worth catching: a broken query body, an empty
-index, a mapping change that stopped indexing the vector.
+**The test asserts floors, not exact scores: 0.60 at k=1 and 0.70 at k=5.** The embedding
+model is hosted and can drift, so pinning a precise number would make the test fail for
+reasons that are not this project's. The floor under Recall@1 is the one that does the
+work, for the reason given above — the larger cutoffs are saturated, so a floor only under
+those would catch a collapse (an empty index, a broken query body, a mapping change that
+stopped indexing the vector) while letting Recall@1 fall from 0.81 to nothing with the
+build still green.
