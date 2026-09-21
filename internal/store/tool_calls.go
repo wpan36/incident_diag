@@ -9,11 +9,20 @@ import (
 	"github.com/wpan36/incident_diag/internal/summary"
 )
 
-// Tool call outcomes. TIMEOUT is separate from ERROR because a tool that ran
-// out of time and a tool that refused the arguments call for different
-// responses, both from the agent and from whoever reads the trail afterwards.
+// Tool call outcomes.
+//
+// Three of them are failures of different kinds, and the agent responds to each
+// differently. REFUSED means the tool ran and declined the arguments — an
+// unknown service, a limit exceeded — which the model can fix by calling again;
+// ERROR and TIMEOUT mean the dependency did not answer, which it cannot.
+// Collapsing REFUSED into OK would make a wrongly-argued call indistinguishable
+// from a correct one, which is what the agent evaluation counts.
+//
+// The column is VARCHAR rather than an ENUM precisely so that this set can grow
+// without a migration.
 const (
 	ToolCallOK      = "OK"
+	ToolCallRefused = "REFUSED"
 	ToolCallError   = "ERROR"
 	ToolCallTimeout = "TIMEOUT"
 )

@@ -160,7 +160,8 @@ No chain-of-thought is persisted anywhere in this schema.
 #### `tool_calls`
 
 `id` PK, `run_id` FK, `step_id` FK, `tool_name` `VARCHAR(64)`, `arguments` `JSON`, `status`
-(`OK` | `ERROR` | `TIMEOUT`), `result_summary` `MEDIUMTEXT` NULL, `result_bytes` `INT`,
+(`OK` | `REFUSED` | `ERROR` | `TIMEOUT` — `REFUSED` added by the agent runtime spec, which is
+free because this column is `VARCHAR` rather than an `ENUM`), `result_summary` `MEDIUMTEXT` NULL, `result_bytes` `INT`,
 `truncated` `BOOL`, `error` `TEXT` NULL, `duration_ms` `INT`, `created_at`.
 
 Index: `(run_id, id)`.

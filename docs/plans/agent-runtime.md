@@ -84,6 +84,39 @@ lifecycle from outcome exists for this.
 Cancellation is the exception: it stops immediately with no final call, because the context
 that would carry it is already cancelled.
 
+### A tool has three outcomes, and only one of them is the loop's problem
+
+`mcpclient.Result` carries two independent signals, and conflating them is the mistake this
+section exists to prevent. `Refused` means the tool ran and declined — an unknown service, a
+malformed timestamp, a limit exceeded — which the model can fix by calling again with
+different arguments. `Status` being `ERROR` or `TIMEOUT` means the dependency did not
+answer, which it cannot.
+
+| Result | `agent_steps.status` | `tool_calls.status` | The loop |
+| --- | --- | --- | --- |
+| ok | `OK` | `OK` | continue |
+| refused | `OK` | `REFUSED` | continue; the observation is the refusal, which names the valid options |
+| error or timeout | `OK` | `ERROR` / `TIMEOUT` | continue; the observation is the failure |
+
+**The step is `OK` in all three.** A step's status says whether the step produced a usable
+action and an observation, not whether the observation was good news. `ERROR` on a step is
+reserved for the case below, where the model returned no tool call at all and there is
+nothing to record.
+
+**`tool_calls.status` gains `REFUSED`.** The column is `VARCHAR`, not an `ENUM`, precisely
+so that adding a value is not a schema change — S1 says so in as many words. Without it a
+wrongly-argued tool call is indistinguishable from a correct one in the audit trail, which
+is exactly what the agent evaluation wants to count.
+
+**A refusal spends one of `MaxToolCalls`.** It consumed a call, and pretending otherwise
+would let an agent that keeps guessing wrong run unbounded.
+
+**A failing dependency does not end the run.** Prometheus being down is a reason to look at
+the logs, not a reason to stop investigating, so the failure text becomes the observation
+and the loop carries on. There is deliberately **no second bound** on repeated failures of
+the same tool: `MaxToolCalls` already bounds the waste, and a per-tool failure counter would
+be a second limit for a case the first one covers.
+
 ### A model that answers in prose
 
 Native tool calling does not guarantee a tool call. A response with no tool call is a step
@@ -158,7 +191,8 @@ so that M23 can be tested without a store.
 - `make check` — the loop against a scripted fake LLM and fake tools: convergence; each of
   the four bounds, including that the forced `finish` runs and the status is `SUCCEEDED`
   with the right `stop_reason`; external cancellation stopping immediately with no final
-  call; a prose response and its retry; a tool that returns an error; an invented evidence
+  call; a prose response and its retry; a refused tool call recorded as `REFUSED` and a
+  failing one as `ERROR`, both leaving the step `OK` and the run going; an invented evidence
   step number; and that no `content` reaches the recorded steps.
 - Configuration loading fails when `MaxSteps` violates the context invariant.
 - `make test-integration` — one real run against DeepSeek with a live `ops-mcp`.
