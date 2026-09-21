@@ -61,8 +61,8 @@ race:
 # Running `go test -tags=integration ./...` by hand without this flag is the
 # one way to see these tests fail spuriously.
 #
-# TEST_MYSQL_DSN, TEST_KAFKA_BROKERS and TEST_ELASTICSEARCH_URL are checked here
-# rather than left to the tests. The tests skip without them so that `go test ./...` stays green on
+# TEST_MYSQL_DSN, TEST_KAFKA_BROKERS, TEST_ELASTICSEARCH_URL and TEST_REDIS_URL
+# are checked here rather than left to the tests. The tests skip without them so that `go test ./...` stays green on
 # a machine with no infrastructure, but this target is the explicit opt-in:
 # reporting success while every database or messaging test silently skipped is
 # worse than failing.
@@ -80,6 +80,11 @@ test-integration:
 	fi
 	@if [ -z "$$TEST_ELASTICSEARCH_URL" ]; then \
 		echo "TEST_ELASTICSEARCH_URL is not set, so every retrieval test would skip."; \
+		echo "Copy .env.example to .env and run 'make up' first."; \
+		exit 1; \
+	fi
+	@if [ -z "$$TEST_REDIS_URL" ]; then \
+		echo "TEST_REDIS_URL is not set, so every event-bus test would skip."; \
 		echo "Copy .env.example to .env and run 'make up' first."; \
 		exit 1; \
 	fi

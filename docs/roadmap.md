@@ -83,8 +83,8 @@ Specified by S6, which is written at the top of Phase C.
 | M22 | Core types and `ContextBuilder`: `AgentRun`, `AgentStep`, `Action`, `Observation`, `ToolCall`, `Evidence`, `FinalResult`; context assembled within a token budget; no chain-of-thought persisted | **done** |
 | M23 | Bounded agent loop: `MaxSteps`, `MaxToolCalls`, `MaxRunDuration`, token budget. Deterministic tests for convergence, each limit, cancellation, malformed output and tool failure — no infrastructure required | **done** |
 | **S8** | **Spec: `agent-execution-and-events`** — event schema, worker idempotency, and the run endpoints. `POST /api/incidents/{id}/runs` and `GET /api/runs/{id}` are in no spec: S1's API surface stops at documents, so without this there is no way to start or read a run over HTTP | **done** |
-| M24 | Redis Streams event bus: event schema, publisher, capped and expiring streams | todo |
-| M25 | `agent-worker`: run creation produces to Kafka; worker executes the loop, persists steps and tool calls, publishes events, writes the final result; redelivery does not duplicate a run; a lease-reclaimed run restarts, deleting the previous attempt's rows first, the way re-ingesting a document does (ADR 0009) | todo |
+| M24 | Redis Streams event bus: event schema, publisher, capped and expiring streams | **done** |
+| M25 | `agent-worker`: run creation produces to Kafka; worker executes the loop, persists steps and tool calls, publishes events, writes the final result; redelivery does not duplicate a run; a lease-reclaimed run restarts, deleting the previous attempt's rows first, the way re-ingesting a document does (ADR 0009) | **done** |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.
 

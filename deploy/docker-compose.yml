@@ -1,10 +1,10 @@
 # Local infrastructure for development and integration tests.
 #
 # Services are added as the milestones that need them land. Today that is MySQL,
-# Kafka and Elasticsearch, plus the Incident Lab — the two demo services,
+# Kafka, Elasticsearch and Redis, plus the Incident Lab — the two demo services,
 # Prometheus, Grafana and cAdvisor — behind the `lab` profile.
 #
-# The profile is what keeps `make up` fast: integration tests need the three
+# The profile is what keeps `make up` fast: integration tests need the four
 # infrastructure services and nothing else, and starting the lab would mean
 # building two Go images first. `make up-lab` starts everything.
 #
@@ -127,6 +127,26 @@ services:
       timeout: 10s
       retries: 12
       start_period: 30s
+
+  redis:
+    image: redis:8.2-alpine
+    restart: unless-stopped
+    ports:
+      # Published so the agent worker and the API, which run on the host, can
+      # reach it — the same reason MYSQL_PORT and KAFKA_PORT are published.
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      # The server answering a command, not the container having started.
+      # make up waits on this.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    # No volume, on purpose. A run's event stream is a live timeline, never a
+    # fact: every event it carries was written to MySQL first, and a client
+    # that lost one reads GET /api/runs/{id} again. Persisting it would be
+    # keeping a cache across restarts.
 
   # ---- Incident Lab (profile: lab) -----------------------------------------
   #

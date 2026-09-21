@@ -124,6 +124,53 @@ func (s *Store) CreateDocument(ctx context.Context, in NewDocument) (Document, e
 	return d, nil
 }
 
+// ExistingDocuments reports which of the given ids are still in the documents
+// table.
+//
+// It exists because retrieval's idea of which documents exist comes from
+// Elasticsearch and evidence.document_id's comes from MySQL, and the two can
+// diverge: a document row deleted while its chunks are still indexed is
+// exactly what fk_evidence_document's ON DELETE SET NULL anticipates. Writing
+// an evidence row for a chunk whose document has gone would violate that
+// foreign key, so the agent worker asks first and drops the id.
+func (s *Store) ExistingDocuments(ctx context.Context, ids []string) (map[string]bool, error) {
+	if len(ids) == 0 {
+		return map[string]bool{}, nil
+	}
+
+	// One placeholder per id. The count is bounded by a run's citations, which
+	// is bounded by max_steps.
+	args := make([]any, len(ids))
+	placeholders := make([]byte, 0, 2*len(ids))
+	for i, id := range ids {
+		args[i] = id
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM documents WHERE id IN (`+string(placeholders)+`)`, args...)
+	if err != nil {
+		return nil, dbError(err, "check which documents exist")
+	}
+	defer rows.Close()
+
+	out := make(map[string]bool, len(ids))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, dbError(err, "scan document id")
+		}
+		out[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbError(err, "check which documents exist")
+	}
+	return out, nil
+}
+
 // GetDocument returns the document with the given id, or a not-found error.
 func (s *Store) GetDocument(ctx context.Context, documentID string) (Document, error) {
 	const q = `SELECT ` + documentColumns + ` FROM documents WHERE id = ?`

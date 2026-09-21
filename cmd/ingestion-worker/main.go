@@ -152,7 +152,7 @@ func run() error {
 		},
 		Logger: logger,
 	})
-	reconciler := reconcile.NewRunner(st, producer, reconcile.PolicyFrom(recCfg), logger)
+	reconciler := reconcile.NewDocumentRunner(st, producer, reconcile.PolicyFrom(recCfg), logger)
 
 	// One cancellation for both goroutines, so that either one failing brings
 	// the other down rather than leaving half a worker running.

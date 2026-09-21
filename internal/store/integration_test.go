@@ -964,3 +964,211 @@ func TestListDocumentsToReconcileLimitsEachCategory(t *testing.T) {
 		t.Errorf("candidates are not ordered by id: %s then %s", got[0].ID, got[1].ID)
 	}
 }
+
+// TestClaimRunDeletesThePreviousAttemptAndResetsTheCounters is what makes
+// ADR 0009's promise true for a run: a restarted timeline begins again rather
+// than splicing two investigations together.
+//
+// It belongs in the claim rather than in a DeleteRunSteps the worker calls
+// afterwards, because a crash between the two would leave a RUNNING run
+// rendering the previous attempt's timeline as its own.
+func TestClaimRunDeletesThePreviousAttemptAndResetsTheCounters(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	r := mustRunningRun(t, s, mustIncident(t, s).ID)
+
+	// A first attempt that got somewhere: a step, its tool call, and a piece
+	// of evidence citing it.
+	step, err := s.CreateStep(ctx, NewStep{
+		RunID: r.ID, StepNumber: 1, ActionType: ActionToolCall,
+		Action: json.RawMessage(`{"tool":"prometheus_query"}`),
+		Status: StepOK, Observation: "p99 is 2.4s",
+	})
+	if err != nil {
+		t.Fatalf("creating a step: %v", err)
+	}
+	tc, err := s.CreateToolCall(ctx, NewToolCall{
+		RunID: r.ID, StepID: step.ID, ToolName: "prometheus_query",
+		Arguments: json.RawMessage(`{"query":"up"}`), Status: ToolCallOK, Result: "1",
+	})
+	if err != nil {
+		t.Fatalf("creating a tool call: %v", err)
+	}
+	if _, err := s.CreateEvidence(ctx, NewEvidence{
+		RunID: r.ID, StepID: step.ID, ToolCallID: tc.ID,
+		SourceType: SourceTool, SourceRef: "prometheus_query", Summary: "p99 is 2.4s",
+	}); err != nil {
+		t.Fatalf("creating evidence: %v", err)
+	}
+	// Counters the first attempt would have written had it finished.
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE agent_runs SET step_count = 4, tool_call_count = 3,
+		        prompt_tokens = 1200, completion_tokens = 340 WHERE id = ?`, r.ID); err != nil {
+		t.Fatalf("seeding the counters: %v", err)
+	}
+
+	past := now().Add(-30 * time.Minute)
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE agent_runs SET started_at = ?, updated_at = ? WHERE id = ?`, past, past, r.ID); err != nil {
+		t.Fatalf("backdating the run: %v", err)
+	}
+
+	reclaimed, err := s.ClaimRun(ctx, r.ID, 10*time.Minute)
+	if err != nil || !reclaimed {
+		t.Fatalf("reclaiming: claimed=%v err=%v", reclaimed, err)
+	}
+
+	steps, err := s.ListStepsByRun(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("listing steps: %v", err)
+	}
+	if len(steps) != 0 {
+		t.Errorf("the reclaim left %d steps of the previous attempt", len(steps))
+	}
+	// tool_calls and evidence cascade from agent_steps, which is what makes
+	// the delete one statement.
+	calls, err := s.ListToolCallsByRun(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("listing tool calls: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("the reclaim left %d tool calls; the cascade did not fire", len(calls))
+	}
+	ev, err := s.ListEvidenceByRun(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("listing evidence: %v", err)
+	}
+	if len(ev) != 0 {
+		t.Errorf("the reclaim left %d pieces of evidence; the cascade did not fire", len(ev))
+	}
+
+	after, err := s.GetRun(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("reading the run: %v", err)
+	}
+	if after.StepCount != 0 || after.ToolCallCount != 0 ||
+		after.PromptTokens != 0 || after.CompletionTokens != 0 {
+		t.Errorf("counters after the reclaim = %d/%d/%d/%d, want all zero",
+			after.StepCount, after.ToolCallCount, after.PromptTokens, after.CompletionTokens)
+	}
+	if after.Attempts != 2 {
+		t.Errorf("attempts = %d, want 2: the reclaim is an attempt", after.Attempts)
+	}
+	if after.Status != RunRunning {
+		t.Errorf("status = %s, want RUNNING", after.Status)
+	}
+}
+
+// A refused claim must delete nothing: the run belongs to another attempt that
+// is still writing to it.
+func TestARefusedClaimLeavesThePreviousAttemptsStepsAlone(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	r := mustRunningRun(t, s, mustIncident(t, s).ID)
+
+	if _, err := s.CreateStep(ctx, NewStep{
+		RunID: r.ID, StepNumber: 1, ActionType: ActionRetrieve,
+		Action: json.RawMessage(`{"tool":"search_knowledge"}`), Status: StepOK,
+	}); err != nil {
+		t.Fatalf("creating a step: %v", err)
+	}
+
+	// Inside its lease, so the claim is refused.
+	claimed, err := s.ClaimRun(ctx, r.ID, time.Hour)
+	if err != nil {
+		t.Fatalf("ClaimRun: %v", err)
+	}
+	if claimed {
+		t.Fatal("a fresh RUNNING run was reclaimed")
+	}
+
+	steps, err := s.ListStepsByRun(ctx, r.ID)
+	if err != nil {
+		t.Fatalf("listing steps: %v", err)
+	}
+	if len(steps) != 1 {
+		t.Errorf("a refused claim left %d steps, want the 1 the live attempt wrote", len(steps))
+	}
+}
+
+func TestListRunsToReconcileFindsBothCategories(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	p := testReconcilePolicy()
+	// The run lease, which is longer than a document's.
+	p.Lease = 15 * time.Minute
+
+	// Never enqueued: created, and the produce never happened.
+	lost, err := s.CreateRun(ctx, NewRun{IncidentID: mustIncident(t, s).ID, Model: "m", MaxSteps: 8})
+	if err != nil {
+		t.Fatalf("creating a run: %v", err)
+	}
+	backdateRun(t, s, lost.ID, 5*time.Minute)
+
+	// Abandoned: claimed by a worker that died holding it.
+	abandoned := mustRunningRun(t, s, mustIncident(t, s).ID)
+	backdateRun(t, s, abandoned.ID, 30*time.Minute)
+
+	// Fresh, and being worked on right now.
+	mustRunningRun(t, s, mustIncident(t, s).ID)
+
+	// A failed run is never a candidate: ClaimRun refuses one, so a message
+	// for it would be rejected forever and attempts would never increase.
+	failed := mustRunningRun(t, s, mustIncident(t, s).ID)
+	if _, err := s.FinishRun(ctx, failed.ID, RunOutcome{Status: RunFailed, StopReason: StopError,
+		Error: "the model could not be called"}); err != nil {
+		t.Fatalf("failing a run: %v", err)
+	}
+	backdateRun(t, s, failed.ID, time.Hour)
+
+	got, err := s.ListRunsToReconcile(ctx, p, 100)
+	if err != nil {
+		t.Fatalf("ListRunsToReconcile: %v", err)
+	}
+	found := categories(got)
+	if len(found) != 2 {
+		t.Fatalf("found %d candidates (%v), want exactly the two stuck runs", len(found), found)
+	}
+	if found[lost.ID] != ReconcileNeverEnqueued {
+		t.Errorf("the never-enqueued run is %q, want %q", found[lost.ID], ReconcileNeverEnqueued)
+	}
+	if found[abandoned.ID] != ReconcileAbandoned {
+		t.Errorf("the abandoned run is %q, want %q", found[abandoned.ID], ReconcileAbandoned)
+	}
+}
+
+// The attempt limit is in the SQL for runs, not only in the policy: a run that
+// kills the worker every time must stop being reclaimed.
+func TestListRunsToReconcileStopsAtTheAttemptLimit(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	p := testReconcilePolicy()
+	p.Lease = 15 * time.Minute
+
+	r := mustRunningRun(t, s, mustIncident(t, s).ID)
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE agent_runs SET attempts = ? WHERE id = ?`, p.MaxAttempts, r.ID); err != nil {
+		t.Fatalf("setting attempts: %v", err)
+	}
+	backdateRun(t, s, r.ID, time.Hour)
+
+	got, err := s.ListRunsToReconcile(ctx, p, 100)
+	if err != nil {
+		t.Fatalf("ListRunsToReconcile: %v", err)
+	}
+	if _, found := categories(got)[r.ID]; found {
+		t.Error("a run at the attempt limit is still a candidate; it should be left for a human")
+	}
+}
+
+// backdateRun moves a run's bookkeeping timestamps into the past, so a test
+// can reach a state that would otherwise need a fifteen-minute wait.
+func backdateRun(t *testing.T, s *Store, runID string, age time.Duration) {
+	t.Helper()
+	past := now().Add(-age)
+	if _, err := s.DB().ExecContext(context.Background(),
+		`UPDATE agent_runs SET updated_at = ?, started_at = IF(started_at IS NULL, NULL, ?) WHERE id = ?`,
+		past, past, runID); err != nil {
+		t.Fatalf("backdating run %s: %v", runID, err)
+	}
+}

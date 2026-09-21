@@ -3,6 +3,7 @@ package api
 import (
 	"github.com/wpan36/incident_diag/internal/search"
 	"github.com/wpan36/incident_diag/internal/store"
+	"github.com/wpan36/incident_diag/internal/wire"
 )
 
 // Incident is the wire shape of an incident.
@@ -19,12 +20,12 @@ import (
 // reason that has nothing to do with the domain, and would make an empty string
 // and an absent value indistinguishable on the wire.
 type Incident struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	Service     *string `json:"service"`
-	CreatedAt   Time    `json:"created_at"`
-	UpdatedAt   Time    `json:"updated_at"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Service     *string   `json:"service"`
+	CreatedAt   wire.Time `json:"created_at"`
+	UpdatedAt   wire.Time `json:"updated_at"`
 }
 
 func newIncident(in store.Incident) Incident {
@@ -33,8 +34,8 @@ func newIncident(in store.Incident) Incident {
 		Title:       in.Title,
 		Description: in.Description,
 		Service:     in.Service,
-		CreatedAt:   NewTime(in.CreatedAt),
-		UpdatedAt:   NewTime(in.UpdatedAt),
+		CreatedAt:   wire.NewTime(in.CreatedAt),
+		UpdatedAt:   wire.NewTime(in.UpdatedAt),
 	}
 }
 
@@ -57,18 +58,18 @@ func newIncidentList(page store.Page[store.Incident]) list[Incident] {
 // content_sha256 is returned, because a client that just uploaded a file can
 // use it to confirm what arrived.
 type Document struct {
-	ID            string  `json:"id"`
-	Filename      string  `json:"filename"`
-	Format        string  `json:"format"`
-	SizeBytes     int64   `json:"size_bytes"`
-	ContentSHA256 string  `json:"content_sha256"`
-	Service       *string `json:"service"`
-	DocumentType  string  `json:"document_type"`
-	Status        string  `json:"status"`
-	FailureReason *string `json:"failure_reason"`
-	ChunkCount    int     `json:"chunk_count"`
-	CreatedAt     Time    `json:"created_at"`
-	UpdatedAt     Time    `json:"updated_at"`
+	ID            string    `json:"id"`
+	Filename      string    `json:"filename"`
+	Format        string    `json:"format"`
+	SizeBytes     int64     `json:"size_bytes"`
+	ContentSHA256 string    `json:"content_sha256"`
+	Service       *string   `json:"service"`
+	DocumentType  string    `json:"document_type"`
+	Status        string    `json:"status"`
+	FailureReason *string   `json:"failure_reason"`
+	ChunkCount    int       `json:"chunk_count"`
+	CreatedAt     wire.Time `json:"created_at"`
+	UpdatedAt     wire.Time `json:"updated_at"`
 }
 
 func newDocument(d store.Document) Document {
@@ -83,8 +84,8 @@ func newDocument(d store.Document) Document {
 		Status:        d.Status,
 		FailureReason: d.FailureReason,
 		ChunkCount:    d.ChunkCount,
-		CreatedAt:     NewTime(d.CreatedAt),
-		UpdatedAt:     NewTime(d.UpdatedAt),
+		CreatedAt:     wire.NewTime(d.CreatedAt),
+		UpdatedAt:     wire.NewTime(d.UpdatedAt),
 	}
 }
 

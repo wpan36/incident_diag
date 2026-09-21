@@ -21,8 +21,12 @@ anything partly valid. The environment is the only source: Compose supplies `.en
   attempt limit and the per-document timeout) and `LoadReconcile`.
 - `embedding.go` — `Embedding` (provider endpoint, key, model, batch size, timeout, retry
   budget) and `LoadEmbedding`.
-- `search.go` — `Search` (Elasticsearch URL, index alias), `LoadSearch` and
-  `DefaultIndexAlias`.
+- `search.go` — `Search` (Elasticsearch URL, index alias, per-query timeout), `LoadSearch`
+  and `DefaultIndexAlias`.
+- `events.go` — `Events` (Redis URL, publish timeout, stream cap and TTL) and `LoadEvents`.
+- `agentworker.go` — `AgentWorker` (run lease, attempt limit, tool server and its timeout,
+  plus the derived worst case and rebalance timeout), `LoadAgentWorker`,
+  `worstCaseRunDuration` and `RebalanceMargin`.
 - `llm.go` — `LLM` (chat endpoint, key, model, per-attempt timeout, retry budget) and
   `LoadLLM`. A separate provider from the embeddings one: DeepSeek has no embeddings
   endpoint.
@@ -71,6 +75,27 @@ timeouts.
   `internal/ingest`, which depends on this one through `store`, and the cap is
   `summary.LimitBytes`. `internal/agent` estimates prompts with `BytesPerToken`, so the
   invariant and the run-time bound cannot disagree.
+- **`LoadAgentWorker` is the third relationship check, and the only one spanning four
+  loaders.** `RUN_LEASE` must outlast a whole run, and a run can legitimately exceed
+  `AGENT_MAX_RUN_DURATION` because bounds are checked between steps: the worst case adds
+  one overrunning step and the forced finish. Counting only the model calls gives eleven
+  minutes for a run that can take thirteen, and a lease sized from that figure is the
+  failure the check exists to prevent — the sweep reclaims a live run, the second attempt
+  deletes rows the first is still writing, and the two collide on
+  `UNIQUE (run_id, step_number)`. It takes `Agent`, `LLM`, `Embedding` and `Search` as
+  arguments rather than re-reading their variables, so a stale copy cannot drift.
+- **`RebalanceMargin` is a constant, not a variable.** Its job is `internal/llm`'s retry
+  back-off, which no per-attempt timeout covers; one minute — the value
+  `cmd/ingestion-worker` already uses — absorbs it. There is no `AGENT_STEP_OVERHEAD`
+  variable for the same reason inverted: nothing would tie one to `EMBED_TIMEOUT` or
+  `EMBED_MAX_RETRIES`, so it would go stale, and a stale figure means the rebalance
+  evicting a worker mid-run.
+- **`LoadEvents` is separate from `LoadAgentWorker`** although M24 only had one consumer:
+  `cmd/api` needs the same Redis for SSE in M26, and loading is split by concern, not by
+  binary. It is not in `Load` either, or `migrate` and `ops-mcp` would need a Redis.
+- **`SEARCH_TIMEOUT` is on `Search` and applies to `Search` alone.** The bulk index and the
+  delete-by-document belong to ingestion and are bounded by `INGEST_DOCUMENT_TIMEOUT`,
+  which a ten-second cap would break.
 - **`LoadReconcile` is the one loader that checks a relationship between two values**:
   `INGEST_DOCUMENT_TIMEOUT` must be shorter than `INGEST_LEASE`, or a handler is still
   working on a document another worker is already free to claim. It is validated here

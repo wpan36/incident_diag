@@ -14,7 +14,7 @@ the Kafka consumers idempotent (ADR 0003).
   shared helpers `now`, `truncateSummary`, `changed`, `nullString` and `nullJSON`.
 - `documents.go` — `Document`, `NewDocument`, `DocumentFilter`, the `PENDING` →
   `PROCESSING` → `READY`/`FAILED` transitions (`ClaimDocument`, `MarkDocumentReady`,
-  `MarkDocumentFailed`), plus create, get and list.
+  `MarkDocumentFailed`), plus create, get, list and `ExistingDocuments`.
 - `incidents.go` — `Incident`, `NewIncident`, create, get and list. No state machine.
 - `runs.go` — `Run`, `NewRun`, `RunOutcome`, the run statuses and the separate stop
   reasons, `ClaimRun`, `FinishRun`, plus create, get and list-by-incident.
@@ -24,8 +24,8 @@ the Kafka consumers idempotent (ADR 0003).
   list-by-run.
 - `evidence.go` — `Evidence`, `NewEvidence`, the evidence sources, create and list-by-run.
 - `reconcile.go` — the vocabulary the sweep reads rows with: `ReconcileCategory`,
-  `ReconcilePolicy`, `ReconcileCandidate` and `ListDocumentsToReconcile`. The runs
-  equivalent lands with M25.
+  `ReconcilePolicy`, `ReconcileCandidate`, `ListDocumentsToReconcile` and
+  `ListRunsToReconcile`.
 - `store_test.go` — unit tests for the pure parts: DSN verification, truncation,
   pagination arithmetic, error classification.
 - `integration_test.go` — `//go:build integration`. Real MySQL, including the migration
@@ -34,7 +34,7 @@ the Kafka consumers idempotent (ADR 0003).
 ## How it fits in
 
 Sits between the schema in `migrations/` and everything that reads or writes it: `api`,
-`ingest` and `reconcile` today, the agent worker later. It imports `config` for the DSN and
+`ingest`, `reconcile`, `agentrun` and `wire`. It imports `config` for the DSN and
 pool settings, and `httpx` to classify what it returns.
 
 ## Gotchas
@@ -51,6 +51,23 @@ pool settings, and `httpx` to classify what it returns.
   attempt, skipping the backoff the reconciler would have applied. Per-record commit keeps
   that to the one record a crash was holding. `ClaimRun` deliberately does not accept
   `FAILED`: a failed investigation has steps and evidence recorded against it.
+- **`ClaimRun` is the one multi-statement transaction here.** ADR 0009 makes a restart
+  begin the timeline again rather than splice it, so the claim deletes the previous
+  attempt's `agent_steps` — `tool_calls` and `evidence` cascade, so it is one statement —
+  and resets the four counters, in the same transaction as the status update. A separate
+  `DeleteRunSteps` the worker called afterwards would move half a state transition out of
+  this layer and open a window where a `RUNNING` run renders the previous attempt's
+  timeline as its own. A refused claim deletes nothing.
+- **`ListRunsToReconcile` has two categories where the documents one has three**, and it
+  puts the attempt limit in the abandoned query rather than a retryable one. A `FAILED` run
+  is never a candidate: `ClaimRun` refuses one, so a re-enqueued message would be rejected
+  on every sweep and `attempts` would never increase — the silent endless loop below. The
+  limit bounds *restarts* instead, because each restart deletes a run's rows and spends
+  real tokens.
+- **`ExistingDocuments` exists because two sources of truth disagree.** Retrieval's document
+  ids come from Elasticsearch and `evidence.document_id`'s foreign key from MySQL, so a
+  document deleted while its chunks are still indexed makes an otherwise valid citation
+  unwritable. `internal/agentrun` asks first and nulls the id rather than failing the run.
 - **`ListDocumentsToReconcile` is looser than the policy on purpose.** It narrows the scan
   with the shortest backoff in the schedule; `internal/reconcile` decides per row. Keeping
   the decision in Go is what stops the SQL and the intent from drifting apart.

@@ -1,5 +1,5 @@
 // Package reconcile re-enqueues rows that nothing will ever send a message for
-// again.
+// again — documents and agent runs alike.
 //
 // Two failures put a row in that state, and they are really one failure. A row
 // created but never enqueued: the INSERT succeeded and the produce that should
@@ -92,15 +92,19 @@ func (p Policy) storePolicy() store.ReconcilePolicy {
 	}
 }
 
-// Due reports whether a row needs a message produced for it at time at, and
-// which category it falls into.
+// DueDocument reports whether a document needs a message produced for it at
+// time at, and which category it falls into.
 //
 // This is the whole policy, as a pure function of the row's state. The database
 // query that produced the candidate is deliberately looser — it narrows the
 // scan — and this decides. Keeping the decision in one place is what stops the
 // SQL and the intent from drifting apart, and it is what makes the policy
 // testable as a table without a database.
-func (p Policy) Due(c store.ReconcileCandidate, at time.Time) (store.ReconcileCategory, bool) {
+//
+// There is one of these per target rather than one that switches on both
+// status vocabularies: runs use RUNNING where documents use PROCESSING, and a
+// shared function reading both is how the two quietly drift.
+func (p Policy) DueDocument(c store.ReconcileCandidate, at time.Time) (store.ReconcileCategory, bool) {
 	switch c.Status {
 	case store.DocumentPending:
 		// The row exists and nothing has touched it since it was created. Long
@@ -130,4 +134,56 @@ func (p Policy) Due(c store.ReconcileCandidate, at time.Time) (store.ReconcileCa
 		// sweep's business.
 		return "", false
 	}
+}
+
+// DueRun is DueDocument for an agent run. Runs have two categories, not
+// three.
+//
+// There is no retryable-failure category, because ClaimRun refuses a FAILED
+// run by design. Re-enqueuing one would produce a message the claim always
+// rejects, and since the sweep writes nothing and the claim never runs,
+// attempts would never increase — so the row would match on every sweep,
+// forever. A failed run is retried by starting a new one, which
+// uniq_active_run permits as soon as the row is terminal.
+func (p Policy) DueRun(c store.ReconcileCandidate, at time.Time) (store.ReconcileCategory, bool) {
+	switch c.Status {
+	case store.RunPending:
+		// Created, and the produce that should have followed it is presumed
+		// lost. Identical to a document's never-enqueued case.
+		return store.ReconcileNeverEnqueued, c.UpdatedAt.Before(at.Add(-p.PendingAfter))
+
+	case store.RunRunning:
+		// A claim older than the lease belongs to a worker that is not coming
+		// back. A NULL stamp is not reclaimable: only the claim writes this
+		// status and it always sets the timestamp.
+		if c.ProcessingStartedAt == nil {
+			return store.ReconcileAbandoned, false
+		}
+		// MaxAttempts bounds restarts here, which is the category documents
+		// leave unbounded: a run that kills the worker every time would
+		// otherwise be reclaimed forever, and each restart deletes its rows
+		// and spends real tokens. At the limit it is left RUNNING for a
+		// human, visible through GET /api/incidents/{id}/runs.
+		if c.Attempts >= p.MaxAttempts {
+			return store.ReconcileAbandoned, false
+		}
+		return store.ReconcileAbandoned, c.ProcessingStartedAt.Before(at.Add(-p.Lease))
+
+	default:
+		// SUCCEEDED or FAILED. A terminal row is not the sweep's business.
+		return "", false
+	}
+}
+
+// RunPolicy is the shared sweep policy with the run-side lease and attempt
+// limit substituted.
+//
+// PolicyFrom builds a Policy out of config.Reconcile alone and cannot express
+// that: the interval, the pending-after and the batch are shared, while the
+// lease and the attempt limit come from RUN_LEASE and RUN_MAX_ATTEMPTS.
+func RunPolicy(cfg config.Reconcile, lease time.Duration, maxAttempts int) Policy {
+	p := PolicyFrom(cfg)
+	p.Lease = lease
+	p.MaxAttempts = maxAttempts
+	return p
 }

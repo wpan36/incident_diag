@@ -48,14 +48,21 @@ func run() error {
 	kafkaCfg, kafkaErr := config.LoadKafka()
 	embedCfg, embedErr := config.LoadEmbedding()
 	searchCfg, searchErr := config.LoadSearch()
-	if err := errors.Join(cfgErr, dbErr, httpErr, docErr, kafkaErr, embedErr, searchErr); err != nil {
+	// The API runs no agent. It needs these two because
+	// POST /api/incidents/{id}/runs records the budget and the model on the
+	// row, so a run stays interpretable after the configuration changes.
+	agentCfg, agentErr := config.LoadAgent()
+	llmCfg, llmErr := config.LoadLLM()
+	if err := errors.Join(cfgErr, dbErr, httpErr, docErr, kafkaErr, embedErr, searchErr,
+		agentErr, llmErr); err != nil {
 		return err
 	}
 
 	logger := log.New(os.Stdout, cfg.LogLevel, "api")
 	logger.Info("starting api", "config", cfg.String(), "database", dbCfg.String(),
 		"http", httpCfg.String(), "documents", docCfg.String(), "kafka", kafkaCfg.String(),
-		"embedding", embedCfg.String(), "search", searchCfg.String())
+		"embedding", embedCfg.String(), "search", searchCfg.String(),
+		"agent", agentCfg.String(), "llm", llmCfg.String())
 
 	// Signals become a cancelled context before anything is opened, so a
 	// Ctrl-C during startup is honoured rather than queued.
@@ -115,6 +122,8 @@ func run() error {
 			Producer: producer,
 			Embedder: embedder,
 			Search:   searcher,
+			Agent:    agentCfg,
+			LLMModel: llmCfg.Model,
 			Logger:   logger,
 		}).Router(),
 		ReadHeaderTimeout: httpCfg.ReadHeaderTimeout,

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/store"
 )
 
@@ -53,7 +54,7 @@ func testPolicy() Policy {
 	}
 }
 
-func TestDue(t *testing.T) {
+func TestDueDocument(t *testing.T) {
 	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	at := func(d time.Duration) *time.Time { t := ago(d); return &t }
@@ -135,7 +136,7 @@ func TestDue(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			category, due := p.Due(c.candidate, now)
+			category, due := p.DueDocument(c.candidate, now)
 			if due != c.wantDue {
 				t.Errorf("due = %v, want %v", due, c.wantDue)
 			}
@@ -159,5 +160,112 @@ func TestStorePolicyCarriesTheLeaseUnchanged(t *testing.T) {
 	}
 	if sp.MinBackoff != MinBackoff() {
 		t.Errorf("store policy min backoff = %s, want %s", sp.MinBackoff, MinBackoff())
+	}
+}
+
+func TestDueRun(t *testing.T) {
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	at := func(d time.Duration) *time.Time { t := ago(d); return &t }
+	// The run policy's lease and attempt limit come from RUN_LEASE and
+	// RUN_MAX_ATTEMPTS rather than the INGEST_ ones.
+	p := testPolicy()
+	p.Lease = 15 * time.Minute
+
+	cases := []struct {
+		name         string
+		candidate    store.ReconcileCandidate
+		wantCategory store.ReconcileCategory
+		wantDue      bool
+	}{
+		{
+			name:         "a fresh PENDING run is still being enqueued",
+			candidate:    store.ReconcileCandidate{Status: store.RunPending, UpdatedAt: ago(5 * time.Second)},
+			wantCategory: store.ReconcileNeverEnqueued,
+		},
+		{
+			name:         "a PENDING run older than PendingAfter lost its produce",
+			candidate:    store.ReconcileCandidate{Status: store.RunPending, UpdatedAt: ago(90 * time.Second)},
+			wantCategory: store.ReconcileNeverEnqueued,
+			wantDue:      true,
+		},
+		{
+			name: "a RUNNING run inside its lease is being investigated",
+			candidate: store.ReconcileCandidate{Status: store.RunRunning, Attempts: 1,
+				UpdatedAt: ago(10 * time.Minute), ProcessingStartedAt: at(10 * time.Minute)},
+			wantCategory: store.ReconcileAbandoned,
+		},
+		{
+			name: "a RUNNING run past its lease was abandoned by a dead worker",
+			candidate: store.ReconcileCandidate{Status: store.RunRunning, Attempts: 1,
+				UpdatedAt: ago(20 * time.Minute), ProcessingStartedAt: at(20 * time.Minute)},
+			wantCategory: store.ReconcileAbandoned,
+			wantDue:      true,
+		},
+		{
+			name: "a RUNNING run with no stamp is left alone",
+			candidate: store.ReconcileCandidate{Status: store.RunRunning, Attempts: 1,
+				UpdatedAt: ago(time.Hour)},
+			wantCategory: store.ReconcileAbandoned,
+		},
+		{
+			// RUN_MAX_ATTEMPTS bounds restarts, which is the category
+			// documents leave unbounded: a run that kills the worker every
+			// time would otherwise be reclaimed forever, and each restart
+			// deletes its rows and spends real tokens.
+			name: "a run at the attempt limit is left RUNNING for a human",
+			candidate: store.ReconcileCandidate{Status: store.RunRunning, Attempts: 3,
+				UpdatedAt: ago(time.Hour), ProcessingStartedAt: at(time.Hour)},
+			wantCategory: store.ReconcileAbandoned,
+		},
+		{
+			// There is no retryable-failure category for runs. ClaimRun
+			// refuses a FAILED run, so re-enqueuing one would produce a
+			// message the claim always rejects and attempts would never
+			// increase — the row would match on every sweep, forever.
+			name: "a FAILED run is never a candidate",
+			candidate: store.ReconcileCandidate{Status: store.RunFailed, Attempts: 1,
+				UpdatedAt: ago(24 * time.Hour)},
+		},
+		{
+			name: "a SUCCEEDED run is not the sweep's business",
+			candidate: store.ReconcileCandidate{Status: store.RunSucceeded,
+				UpdatedAt: ago(24 * time.Hour)},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			category, due := p.DueRun(c.candidate, now)
+			if due != c.wantDue {
+				t.Errorf("due = %v, want %v", due, c.wantDue)
+			}
+			if category != c.wantCategory {
+				t.Errorf("category = %q, want %q", category, c.wantCategory)
+			}
+		})
+	}
+}
+
+func TestRunPolicyOverridesOnlyTheLeaseAndTheAttemptLimit(t *testing.T) {
+	// The interval, the pending-after and the batch are shared with the
+	// document sweep; the other two are the run's own.
+	cfg := config.Reconcile{
+		Interval:     30 * time.Second,
+		PendingAfter: time.Minute,
+		Batch:        100,
+		Lease:        10 * time.Minute,
+		MaxAttempts:  9,
+	}
+	p := RunPolicy(cfg, 15*time.Minute, 3)
+
+	if p.Lease != 15*time.Minute {
+		t.Errorf("Lease = %s, want the run lease of 15m", p.Lease)
+	}
+	if p.MaxAttempts != 3 {
+		t.Errorf("MaxAttempts = %d, want 3", p.MaxAttempts)
+	}
+	if p.Interval != cfg.Interval || p.PendingAfter != cfg.PendingAfter || p.Batch != cfg.Batch {
+		t.Errorf("RunPolicy changed a shared value: %+v", p)
 	}
 }

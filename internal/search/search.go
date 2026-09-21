@@ -102,6 +102,11 @@ type Client struct {
 	es     *elasticsearch.Client
 	alias  string
 	logger *slog.Logger
+
+	// searchTimeout bounds one kNN query and nothing else. The bulk index and
+	// the delete-by-document are ingestion's, already bounded by
+	// INGEST_DOCUMENT_TIMEOUT.
+	searchTimeout time.Duration
 }
 
 // New builds a client.
@@ -120,7 +125,7 @@ func New(cfg config.Search, logger *slog.Logger) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("search: open client: %w", err)
 	}
-	return &Client{es: es, alias: cfg.IndexAlias, logger: logger}, nil
+	return &Client{es: es, alias: cfg.IndexAlias, logger: logger, searchTimeout: cfg.Timeout}, nil
 }
 
 // Alias returns the alias every read and write goes through.

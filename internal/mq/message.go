@@ -66,8 +66,7 @@ type DocumentMessage struct {
 // EntityID implements Message.
 func (m DocumentMessage) EntityID() string { return m.DocumentID }
 
-// RunMessage asks the agent worker to execute one run. Nothing consumes it
-// before M25; it is defined here because it is the same contract.
+// RunMessage asks the agent worker to execute one run.
 type RunMessage struct {
 	Envelope
 	RunID string `json:"run_id"`

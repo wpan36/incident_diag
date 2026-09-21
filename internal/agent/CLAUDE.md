@@ -33,8 +33,9 @@ database, no broker and no provider.
 
 `llm.Chatter` for the model, `mcpclient.Client` for the operational tools, `embed.Embedder`
 plus `search.Client` for retrieval, `summary.Cap` for the observation cap, and `store`'s
-constants for the persisted vocabulary — but never a `*store.Store`. M25 supplies the
-callback that writes rows and publishes events, and calls `FinishRun` with the outcome.
+constants for the persisted vocabulary — but never a `*store.Store`. `internal/agentrun`
+supplies the callback that writes rows and publishes events, and calls `FinishRun` with the
+outcome.
 
 ## Gotchas
 
@@ -90,4 +91,6 @@ callback that writes rows and publishes events, and calls `FinishRun` with the o
 - **The loop keeps every retrieval's hits until the run ends.** That is what validates a
   cited `document_id` and what fills an evidence row with the one hit the model cited
   rather than with all five. An invented step or document is dropped with a warning: a
-  wrong citation should not discard a correct diagnosis.
+  wrong citation should not discard a correct diagnosis. A cited document that was real at
+  index time but whose row has since gone is `internal/agentrun`'s to drop, on the same
+  principle — this package cannot see MySQL.

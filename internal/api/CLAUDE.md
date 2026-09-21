@@ -5,7 +5,7 @@
 The HTTP surface: routing, middleware, request validation and the response shapes. Two
 things hold across every endpoint — every failure renders the same envelope, built from the
 error's `httpx` classification rather than from whatever the handler happened to know; and
-every response timestamp goes through `api.Time`, so the format is a property of the type
+every response timestamp goes through `wire.Time`, so the format is a property of the type
 instead of something each handler must remember.
 
 ## Contents
@@ -19,21 +19,23 @@ instead of something each handler must remember.
 - `validate.go` — the `validation` collector, the field length limits and
   `serviceNamePattern`.
 - `page.go` — the `list[T]` response shape and `parsePageParams`.
-- `time.go` — `TimeLayout`, the `Time` type and `NullTime`.
 - `responses.go` — the wire shapes `Incident`, `Document` and `SearchResult`, and their
-  converters.
+  converters. The run shapes live in `internal/wire`, and so does `Time`.
 - `incidents.go` — create, list and get, plus `decodeJSON` and `maxJSONBodyBytes`.
 - `documents.go` — the streaming multipart upload, the accepted extensions and document
   types, `enqueueIngestion`, plus list and get.
+- `runs.go` — `POST /api/incidents/:id/runs`, `GET /api/runs/:id`,
+  `GET /api/incidents/:id/runs`, plus `enqueueRun` and `newRunList`.
 - `search.go` — `GET /api/search`: parameter validation, then embed the query and retrieve.
 - `api_test.go`, `documents_test.go`, `search_test.go` — unit tests against the router with
   fakes.
-- `integration_test.go` — `//go:build integration`. Real MySQL and a real directory.
+- `integration_test.go`, `runs_integration_test.go` — `//go:build integration`. Real MySQL
+  and a real directory.
 
 ## How it fits in
 
 The top of the `internal/` graph: it depends on `store`, `files`, `mq`, `embed`, `search`,
-`httpx`, `id` and
+`wire`, `config`, `httpx`, `id` and
 `log`, and nothing depends on it except `cmd/api`. It is where `httpx` kinds become status codes
 and where stored types become wire types.
 
@@ -69,10 +71,33 @@ and where stored types become wire types.
   the container's layout and invite a client to construct one; `attempts` and
   `processing_started_at` are ingestion bookkeeping. `content_sha256` is returned so an
   uploader can confirm what arrived.
+- **`GET /api/runs/{id}` is the one endpoint with a second shape for its entity.** A
+  listing returns `wire.Run` and the fetch returns `wire.RunDetail`, against the convention
+  below. A listing carrying every run's whole timeline is the alternative, and it is worse.
+  The exception is named here rather than discovered in review.
+- **A run's budget is not overridable and the request body is empty.** `config.LoadAgent`
+  ties the no-pruning invariant to configuration loading, and a request that set its own
+  `max_steps` would give that invariant a second enforcement point where a violating run
+  would break the guarantee silently. The budget and the model are recorded on the row
+  instead, which is why `cmd/api` now loads `AGENT_*` and `LLM_MODEL` although it runs no
+  agent.
+- **The 409 on a second run comes from `uniq_active_run` refusing the insert**, not from a
+  read-then-write check two requests could interleave. The 404 comes from reading the
+  incident first: a run against a missing one violates `fk_agent_runs_incident`, and
+  `dbError` does not classify a foreign-key failure as not-found, so without the read the
+  client would get a 500 for its own mistake. The runs listing reads it for a smaller
+  reason — an empty page and a mistyped id must not look the same.
+- **A failed produce does not fail a run start either**, for the reason the upload has:
+  the run was created, so 500 would be a lie, and a client retrying on it would hit 409
+  from its own first attempt. The row is `PENDING`, which the run reconciler sweeps for.
+- **`GET /api/runs/{id}` is not paginated.** `max_steps` bounds the step count at single
+  digits and a partial timeline is not useful. That makes it the second design to depend
+  quietly on that invariant, after S7's context builder.
 - **Timestamps are fixed-width microseconds.** Go's default is RFC 3339 *Nano*, which trims
   trailing zeros, so the same instant would serialize with a different number of digits
   depending on its value. `Time` also implements `UnmarshalJSON` purely so the type
-  round-trips for tests and generated clients.
+  round-trips for tests and generated clients. It moved to `internal/wire` in M24, because
+  the agent worker publishes the same shapes onto a Redis stream.
 - **The upload is a single streaming pass and the cleanup order matters.** Parts arrive in
   whatever order the client sent them, so the file may be written before `document_type` has
   been seen; `readUpload` cleans up its own errors, and the handler removes the file on a

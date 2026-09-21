@@ -27,10 +27,12 @@ func isolate(t *testing.T) {
 		"CHUNK_TARGET_TOKENS", "CHUNK_MAX_PER_DOCUMENT",
 		"EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL",
 		"EMBED_BATCH_SIZE", "EMBED_TIMEOUT", "EMBED_MAX_RETRIES",
-		"ELASTICSEARCH_URL", "ES_INDEX_ALIAS",
+		"ELASTICSEARCH_URL", "ES_INDEX_ALIAS", "SEARCH_TIMEOUT",
+		"REDIS_URL", "REDIS_PUBLISH_TIMEOUT", "EVENT_STREAM_MAXLEN", "EVENT_STREAM_TTL",
 		"LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_TIMEOUT", "LLM_MAX_RETRIES",
 		"AGENT_MAX_STEPS", "AGENT_MAX_TOOL_CALLS", "AGENT_MAX_RUN_DURATION",
 		"AGENT_MAX_PROMPT_TOKENS",
+		"RUN_LEASE", "RUN_MAX_ATTEMPTS", "AGENT_TOOL_SERVER_URL", "AGENT_TOOL_TIMEOUT",
 		"CHECKOUT_PAYMENT_URL", "CHECKOUT_PAYMENT_TIMEOUT",
 		"PAYMENT_POOL_SIZE", "PAYMENT_PROCESSOR_LATENCY_MS", "LAB_LOG_DIR",
 	} {
@@ -816,5 +818,148 @@ func TestLoadAgentRejectsNonPositiveBounds(t *testing.T) {
 				t.Errorf("%s=%s was accepted", tc.key, tc.value)
 			}
 		})
+	}
+}
+
+// --- the event bus ----------------------------------------------------------
+
+func TestLoadEventsDefaults(t *testing.T) {
+	isolate(t)
+	t.Setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+
+	c, err := LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	if c.PublishTimeout != 2*time.Second || c.StreamMaxLen != 1000 || c.StreamTTL != 24*time.Hour {
+		t.Errorf("defaults not applied: %+v", c)
+	}
+	// The URL can carry a password, so it must not reach a log line.
+	if strings.Contains(c.String(), "127.0.0.1") {
+		t.Errorf("String() leaks the connection string: %q", c.String())
+	}
+}
+
+func TestLoadEventsRequiresTheURL(t *testing.T) {
+	isolate(t)
+	if _, err := LoadEvents(); err == nil {
+		t.Fatal("LoadEvents accepted an environment with no REDIS_URL")
+	}
+}
+
+// --- the agent worker -------------------------------------------------------
+
+// workerInputs are the four loaders' defaults, which is what the worst case
+// below is computed from.
+func workerInputs(t *testing.T) (Agent, LLM, Embedding, Search) {
+	t.Helper()
+	return Agent{MaxSteps: 8, MaxToolCalls: 6, MaxRunDuration: 5 * time.Minute, MaxPromptTokens: 60000},
+		LLM{Timeout: 60 * time.Second, MaxRetries: 2},
+		Embedding{Timeout: 30 * time.Second, MaxRetries: 3},
+		Search{Timeout: 10 * time.Second}
+}
+
+func TestLoadAgentWorkerDefaults(t *testing.T) {
+	isolate(t)
+	t.Setenv("AGENT_TOOL_SERVER_URL", "http://127.0.0.1:8084/mcp")
+
+	w, err := LoadAgentWorker(workerInputs(t))
+	if err != nil {
+		t.Fatalf("LoadAgentWorker: %v", err)
+	}
+	if w.RunLease != 15*time.Minute || w.RunMaxAttempts != 3 || w.ToolTimeout != 30*time.Second {
+		t.Errorf("defaults not applied: %+v", w)
+	}
+
+	// 5m + 2x3m + max(30s, 30s x 4 + 10s) = 5m + 6m + 2m10s.
+	const wantWorstCase = 13*time.Minute + 10*time.Second
+	if w.WorstCase != wantWorstCase {
+		t.Errorf("WorstCase = %s, want %s", w.WorstCase, wantWorstCase)
+	}
+	if w.RebalanceTimeout != wantWorstCase+RebalanceMargin {
+		t.Errorf("RebalanceTimeout = %s, want %s", w.RebalanceTimeout, wantWorstCase+RebalanceMargin)
+	}
+
+	// The ordering the whole invariant exists to hold:
+	// AGENT_MAX_RUN_DURATION < worstCase < rebalance timeout < RUN_LEASE.
+	agent, _, _, _ := workerInputs(t)
+	if !(agent.MaxRunDuration < w.WorstCase &&
+		w.WorstCase < w.RebalanceTimeout &&
+		w.RebalanceTimeout < w.RunLease) {
+		t.Errorf("the derived timings are out of order: max_run_duration=%s worst_case=%s "+
+			"rebalance=%s lease=%s",
+			agent.MaxRunDuration, w.WorstCase, w.RebalanceTimeout, w.RunLease)
+	}
+}
+
+// A lease shorter than the worst case is the failure this check exists to
+// prevent: the sweep reclaims a run that is still working, the second attempt
+// deletes rows the first is still writing, and the two collide on
+// UNIQUE (run_id, step_number).
+func TestLoadAgentWorkerRefusesALeaseShorterThanAWholeRun(t *testing.T) {
+	isolate(t)
+	t.Setenv("AGENT_TOOL_SERVER_URL", "http://127.0.0.1:8084/mcp")
+	// Counting only the model calls gives eleven minutes, which is exactly the
+	// too-short figure the derivation exists to correct.
+	t.Setenv("RUN_LEASE", "11m")
+
+	_, err := LoadAgentWorker(workerInputs(t))
+	if err == nil {
+		t.Fatal("LoadAgentWorker accepted a lease shorter than a run's worst case")
+	}
+	if !strings.Contains(err.Error(), "RUN_LEASE") {
+		t.Errorf("error = %v, want it to name RUN_LEASE", err)
+	}
+}
+
+// The overhead follows the retry budgets rather than a constant, which is why
+// there is no AGENT_STEP_OVERHEAD variable: a stale figure would mean the
+// rebalance evicting a worker mid-run.
+func TestWorstCaseFollowsTheRetryBudgets(t *testing.T) {
+	isolate(t)
+	t.Setenv("AGENT_TOOL_SERVER_URL", "http://127.0.0.1:8084/mcp")
+	t.Setenv("RUN_LEASE", "60m")
+
+	base, err := LoadAgentWorker(workerInputs(t))
+	if err != nil {
+		t.Fatalf("LoadAgentWorker: %v", err)
+	}
+
+	agent, llm, embedding, search := workerInputs(t)
+	embedding.MaxRetries++
+	raised, err := LoadAgentWorker(agent, llm, embedding, search)
+	if err != nil {
+		t.Fatalf("LoadAgentWorker: %v", err)
+	}
+	// One more embedding attempt is one more EMBED_TIMEOUT in the retrieval,
+	// which is the branch stepOverhead takes at these defaults.
+	if want := base.WorstCase + embedding.Timeout; raised.WorstCase != want {
+		t.Errorf("raising EMBED_MAX_RETRIES gave a worst case of %s, want %s",
+			raised.WorstCase, want)
+	}
+
+	// A tool timeout above the retrieval takes the other branch.
+	agent, llm, embedding, search = workerInputs(t)
+	t.Setenv("AGENT_TOOL_TIMEOUT", "10m")
+	longTool, err := LoadAgentWorker(agent, llm, embedding, search)
+	if err != nil {
+		t.Fatalf("LoadAgentWorker: %v", err)
+	}
+	if want := agent.MaxRunDuration + 2*llm.Timeout*3 + 10*time.Minute; longTool.WorstCase != want {
+		t.Errorf("with a 10m tool timeout the worst case is %s, want %s", longTool.WorstCase, want)
+	}
+}
+
+func TestLoadAgentWorkerRequiresAToolServer(t *testing.T) {
+	isolate(t)
+	if _, err := LoadAgentWorker(workerInputs(t)); err == nil {
+		t.Fatal("LoadAgentWorker accepted an environment with no AGENT_TOOL_SERVER_URL")
+	}
+
+	// A worker that started with a nonsense URL would claim runs it cannot
+	// investigate.
+	t.Setenv("AGENT_TOOL_SERVER_URL", "127.0.0.1:8084")
+	if _, err := LoadAgentWorker(workerInputs(t)); err == nil {
+		t.Fatal("LoadAgentWorker accepted a tool server URL with no scheme")
 	}
 }

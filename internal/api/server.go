@@ -4,7 +4,7 @@
 // Two things hold across every endpoint. Every failure renders the same
 // envelope, built from the error's httpx classification rather than from
 // whatever the handler happened to know. And every response timestamp goes
-// through api.Time, so the format is a property of the type instead of
+// through wire.Time, so the format is a property of the type instead of
 // something each handler has to remember.
 package api
 
@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/embed"
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/httpx"
@@ -48,12 +49,19 @@ const readinessTimeout = 2 * time.Second
 // That endpoint exists to make retrieval inspectable, so an API process that
 // could not embed a query would be missing the point rather than saving a
 // dependency.
+//
+// Agent and LLMModel are what POST /api/incidents/{id}/runs records on the
+// run. They are here rather than read per request because a run has to keep
+// the bounds it was created with, and because that is what makes the API
+// process need AGENT_* and LLM_MODEL at all — it runs no agent itself.
 type Deps struct {
 	Store    *store.Store
 	Files    *files.Storage
 	Producer mq.Producer
 	Embedder embed.Embedder
 	Search   *search.Client
+	Agent    config.Agent
+	LLMModel string
 	Logger   *slog.Logger
 }
 
@@ -94,9 +102,14 @@ func (s *Server) Router() http.Handler {
 		api.GET("/incidents", s.listIncidents)
 		api.GET("/incidents/:id", s.getIncident)
 
+		api.POST("/incidents/:id/runs", s.createRun)
+		api.GET("/incidents/:id/runs", s.listIncidentRuns)
+
 		api.POST("/documents", s.uploadDocument)
 		api.GET("/documents", s.listDocuments)
 		api.GET("/documents/:id", s.getDocument)
+
+		api.GET("/runs/:id", s.getRun)
 
 		api.GET("/search", s.search)
 	}

@@ -60,9 +60,9 @@ type TopicSpec struct {
 
 // DefaultTopics are the topics this system uses.
 //
-// Both are created by the ingestion worker even though nothing consumes
-// agent.runs.v1 until M25, so that topic creation happens in one place rather
-// than racing between two processes.
+// Both workers create both topics at startup. Creation is idempotent, so
+// either process can be the first one up and neither has to wait for the
+// other.
 func DefaultTopics() []TopicSpec {
 	return []TopicSpec{
 		{Name: TopicDocumentsIngest, Partitions: DefaultPartitions, Replication: DefaultReplication},

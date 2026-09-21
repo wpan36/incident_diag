@@ -19,10 +19,12 @@ idempotent topic creation.
 
 ## How it fits in
 
-`internal/api` produces after an upload; `internal/reconcile` produces for rows nothing will
-send a message for again; `internal/ingest` is the handler on the other side.
-`cmd/ingestion-worker` calls `EnsureTopics` at startup. The spec is
-`docs/plans/async-messaging-and-idempotency.md`.
+`internal/api` produces after an upload and after a run is created; `internal/reconcile`
+produces for rows nothing will send a message for again; `internal/ingest` and
+`internal/agentrun` are the handlers on the other side. Both workers call `EnsureTopics` at
+startup, so either can be the first one up. The specs are
+`docs/plans/async-messaging-and-idempotency.md` and
+`docs/plans/agent-execution-and-events.md`.
 
 ## Gotchas
 

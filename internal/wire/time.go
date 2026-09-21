@@ -1,4 +1,4 @@
-package api
+package wire
 
 import (
 	"fmt"
@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// TimeLayout is the one timestamp format this API emits: RFC 3339 in UTC with
-// fixed microsecond precision, "2026-09-20T10:11:12.345678Z".
+// TimeLayout is the one timestamp format this project emits: RFC 3339 in UTC
+// with fixed microsecond precision, "2026-09-20T10:11:12.345678Z".
 //
 // Go's default marshalling of a time.Time is RFC 3339 *Nano*, which trims
 // trailing zeros, so the same instant would serialize to a different number of

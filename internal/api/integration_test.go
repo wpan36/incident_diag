@@ -75,7 +75,15 @@ func liveRouterWithProducer(t *testing.T) (http.Handler, *files.Storage, *mq.Fak
 		t.Fatalf("preparing file storage: %v", err)
 	}
 	producer := &mq.FakeProducer{}
-	return NewServer(Deps{Store: st, Files: fs, Producer: producer, Logger: log.Discard()}).Router(), fs, producer
+	return NewServer(Deps{
+		Store: st, Files: fs, Producer: producer,
+		// What POST /api/incidents/{id}/runs records on the row. The values
+		// are the loaders' defaults; the endpoint does not let a request
+		// override them.
+		Agent:    config.Agent{MaxSteps: 8, MaxToolCalls: 6, MaxRunDuration: 5 * time.Minute, MaxPromptTokens: 60000},
+		LLMModel: "deepseek-chat",
+		Logger:   log.Discard(),
+	}).Router(), fs, producer
 }
 
 // uniqueService returns a service name no other test will use, so a listing

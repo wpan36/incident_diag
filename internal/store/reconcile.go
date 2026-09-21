@@ -47,12 +47,21 @@ type ReconcilePolicy struct {
 
 // ReconcileCandidate is a row the sweep should look at, with the state the
 // policy needs in order to decide.
+//
+// One type serves both tables. Status is DocumentProcessing for a document and
+// RunRunning for a run, which is why internal/reconcile has a Due function per
+// target rather than one that switches on both vocabularies.
 type ReconcileCandidate struct {
-	ID                  string
-	Category            ReconcileCategory
-	Status              string
-	Attempts            int
-	UpdatedAt           time.Time
+	ID       string
+	Category ReconcileCategory
+	Status   string
+	Attempts int
+
+	UpdatedAt time.Time
+
+	// ProcessingStartedAt is when the claim was taken:
+	// documents.processing_started_at for a document, agent_runs.started_at
+	// for a run.
 	ProcessingStartedAt *time.Time
 }
 
@@ -102,6 +111,87 @@ func (s *Store) ListDocumentsToReconcile(ctx context.Context, p ReconcilePolicy,
 			return nil, err
 		}
 		out = append(out, batch...)
+	}
+	return out, nil
+}
+
+// ListRunsToReconcile returns up to limit runs per category that may need a
+// message produced for them.
+//
+// Runs have two categories, not three. There is no retryable-failure category
+// because ClaimRun refuses a FAILED run by design: re-enqueuing one would
+// produce a message the claim always rejects, and since the sweep writes
+// nothing and the claim never runs, attempts would never increase — so the row
+// would match on every sweep, forever. A failed run is retried by starting a
+// new one, which uniq_active_run permits as soon as the row is terminal.
+//
+// The abandoned query carries the attempt limit that the documents one leaves
+// to the retryable category. A run that kills the worker every time would
+// otherwise be reclaimed forever, and each restart deletes its rows and spends
+// real tokens; at the limit the run is left RUNNING for a human.
+func (s *Store) ListRunsToReconcile(ctx context.Context, p ReconcilePolicy, limit int) ([]ReconcileCandidate, error) {
+	if limit < 1 {
+		return nil, nil
+	}
+	t := now()
+
+	queries := []struct {
+		category ReconcileCategory
+		where    string
+		args     []any
+	}{
+		{
+			category: ReconcileNeverEnqueued,
+			where:    `status = ? AND updated_at < ?`,
+			args:     []any{RunPending, t.Add(-p.PendingAfter)},
+		},
+		{
+			category: ReconcileAbandoned,
+			where:    `status = ? AND started_at < ? AND attempts < ?`,
+			args:     []any{RunRunning, t.Add(-p.Lease), p.MaxAttempts},
+		},
+	}
+
+	var out []ReconcileCandidate
+	for _, q := range queries {
+		batch, err := s.runReconcileQuery(ctx, q.category, q.where, q.args, limit)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, batch...)
+	}
+	return out, nil
+}
+
+// runReconcileQuery is reconcileQuery over agent_runs.
+//
+// ReconcileCandidate.ProcessingStartedAt carries agent_runs.started_at. The
+// field keeps its name rather than being renamed across the document path:
+// the two columns mean the same thing, which is when the claim was taken.
+func (s *Store) runReconcileQuery(ctx context.Context, category ReconcileCategory,
+	where string, args []any, limit int) ([]ReconcileCandidate, error) {
+
+	q := `SELECT id, status, attempts, updated_at, started_at
+	        FROM agent_runs
+	       WHERE ` + where + `
+	       ORDER BY id LIMIT ?`
+
+	rows, err := s.db.QueryContext(ctx, q, append(args, limit)...)
+	if err != nil {
+		return nil, dbError(err, "list agent runs to reconcile")
+	}
+	defer rows.Close()
+
+	var out []ReconcileCandidate
+	for rows.Next() {
+		c := ReconcileCandidate{Category: category}
+		if err := rows.Scan(&c.ID, &c.Status, &c.Attempts, &c.UpdatedAt, &c.ProcessingStartedAt); err != nil {
+			return nil, dbError(err, "scan reconcile candidate")
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbError(err, "list agent runs to reconcile")
 	}
 	return out, nil
 }

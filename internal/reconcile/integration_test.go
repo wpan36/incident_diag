@@ -47,8 +47,13 @@ func testStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	if _, err := st.DB().ExecContext(ctx, "DELETE FROM documents"); err != nil {
-		t.Fatalf("clearing documents: %v", err)
+	// Runs and their timelines go too, so a run sweep's counts are about this
+	// test's rows. Order matters: evidence and tool_calls cascade from
+	// agent_steps, and agent_runs points at incidents.
+	for _, table := range []string{"agent_runs", "incidents", "documents"} {
+		if _, err := st.DB().ExecContext(ctx, "DELETE FROM "+table); err != nil {
+			t.Fatalf("clearing %s: %v", table, err)
+		}
 	}
 	return st
 }
@@ -56,7 +61,7 @@ func testStore(t *testing.T) *store.Store {
 func testRunner(t *testing.T, st *store.Store) (*Runner, *mq.FakeProducer) {
 	t.Helper()
 	p := &mq.FakeProducer{}
-	return NewRunner(st, p, Policy{
+	return NewDocumentRunner(st, p, Policy{
 		Interval:     30 * time.Second,
 		PendingAfter: time.Minute,
 		Lease:        10 * time.Minute,
@@ -302,5 +307,146 @@ func TestRunSweepsImmediatelyAndStopsWithItsContext(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return within 5s of cancellation; the goroutine leaks")
+	}
+}
+
+// --- the run sweep ----------------------------------------------------------
+
+// testRunRunner is testRunner for agent runs. It uses the run-side lease and
+// attempt limit, which are longer and bounded respectively.
+func testRunRunner(t *testing.T, st *store.Store) (*Runner, *mq.FakeProducer) {
+	t.Helper()
+	p := &mq.FakeProducer{}
+	return NewRunRunner(st, p, config.Reconcile{
+		Interval:     30 * time.Second,
+		PendingAfter: time.Minute,
+		Batch:        100,
+	}, 15*time.Minute, 3, log.Discard()), p
+}
+
+func newPendingRun(t *testing.T, st *store.Store) store.Run {
+	t.Helper()
+	inc, err := st.CreateIncident(context.Background(), store.NewIncident{
+		Title: "payment-service latency spike", Description: "p99 above 2s",
+	})
+	if err != nil {
+		t.Fatalf("creating an incident: %v", err)
+	}
+	r, err := st.CreateRun(context.Background(), store.NewRun{
+		IncidentID: inc.ID, Model: "deepseek-chat", MaxSteps: 8,
+	})
+	if err != nil {
+		t.Fatalf("creating a run: %v", err)
+	}
+	return r
+}
+
+func backdateRun(t *testing.T, st *store.Store, runID string, age time.Duration) {
+	t.Helper()
+	past := time.Now().UTC().Truncate(time.Microsecond).Add(-age)
+	if _, err := st.DB().ExecContext(context.Background(),
+		`UPDATE agent_runs SET updated_at = ?, started_at = IF(started_at IS NULL, NULL, ?) WHERE id = ?`,
+		past, past, runID); err != nil {
+		t.Fatalf("backdating run %s: %v", runID, err)
+	}
+}
+
+// A run abandoned in RUNNING is worse than an abandoned document:
+// uniq_active_run makes its incident reject every new run with 409 until
+// something reclaims it.
+func TestRunSweepReEnqueuesAStaleRunAndLeavesAFreshOneAlone(t *testing.T) {
+	st := testStore(t)
+	r, producer := testRunRunner(t, st)
+	ctx := context.Background()
+
+	// Never enqueued: created, and the produce that should have followed it
+	// never happened.
+	lost := newPendingRun(t, st)
+	backdateRun(t, st, lost.ID, 5*time.Minute)
+
+	// Abandoned: claimed by a worker that then died.
+	abandoned := newPendingRun(t, st)
+	if claimed, err := st.ClaimRun(ctx, abandoned.ID, 15*time.Minute); err != nil || !claimed {
+		t.Fatalf("claiming: claimed=%v err=%v", claimed, err)
+	}
+	backdateRun(t, st, abandoned.ID, 30*time.Minute)
+
+	// Being investigated right now, and created just now: neither is stuck.
+	working := newPendingRun(t, st)
+	if claimed, err := st.ClaimRun(ctx, working.ID, 15*time.Minute); err != nil || !claimed {
+		t.Fatalf("claiming: claimed=%v err=%v", claimed, err)
+	}
+	newPendingRun(t, st)
+
+	stats, err := r.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if stats.Total() != 2 ||
+		stats.Enqueued[store.ReconcileNeverEnqueued] != 1 ||
+		stats.Enqueued[store.ReconcileAbandoned] != 1 {
+		t.Fatalf("stats = %+v, want one of each stuck category", stats)
+	}
+	// No retryable-failure category exists for runs at all.
+	if stats.Enqueued[store.ReconcileRetryable] != 0 {
+		t.Errorf("the run sweep produced %d retryable_failure messages, a category runs cannot have",
+			stats.Enqueued[store.ReconcileRetryable])
+	}
+
+	for _, m := range producer.Messages() {
+		if m.Topic != mq.TopicAgentRuns {
+			t.Errorf("produced to %s, want %s", m.Topic, mq.TopicAgentRuns)
+		}
+		if _, ok := m.Msg.(mq.RunMessage); !ok {
+			t.Errorf("produced %+v, want a RunMessage", m.Msg)
+		}
+	}
+	keys := map[string]bool{}
+	for _, k := range producer.Keys() {
+		keys[k] = true
+	}
+	if !keys[lost.ID] || !keys[abandoned.ID] || len(keys) != 2 {
+		t.Errorf("produced for %v, want just %s and %s", producer.Keys(), lost.ID, abandoned.ID)
+	}
+
+	// The sweep produces and never writes, which is what keeps it from racing
+	// the claim.
+	after, err := st.GetRun(ctx, abandoned.ID)
+	if err != nil {
+		t.Fatalf("reading the run: %v", err)
+	}
+	if after.Status != store.RunRunning || after.Attempts != 1 {
+		t.Errorf("row after the sweep = %s/%d attempts, want RUNNING/1", after.Status, after.Attempts)
+	}
+}
+
+// A FAILED run is never re-enqueued: ClaimRun refuses one, so the message
+// would be rejected on every sweep and attempts would never increase — the
+// silent endless loop internal/store warns about.
+func TestRunSweepNeverRetriesAFailedRun(t *testing.T) {
+	st := testStore(t)
+	r, producer := testRunRunner(t, st)
+	ctx := context.Background()
+
+	failed := newPendingRun(t, st)
+	if claimed, err := st.ClaimRun(ctx, failed.ID, 15*time.Minute); err != nil || !claimed {
+		t.Fatalf("claiming: claimed=%v err=%v", claimed, err)
+	}
+	if _, err := st.FinishRun(ctx, failed.ID, store.RunOutcome{
+		Status: store.RunFailed, StopReason: store.StopError, Error: "the model could not be called",
+	}); err != nil {
+		t.Fatalf("failing the run: %v", err)
+	}
+	backdateRun(t, st, failed.ID, 24*time.Hour)
+
+	stats, err := r.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if stats.Total() != 0 {
+		t.Errorf("stats = %+v, want nothing: a failed run is retried by starting a new one", stats)
+	}
+	if keys := producer.Keys(); len(keys) != 0 {
+		t.Errorf("produced %v for a failed run", keys)
 	}
 }

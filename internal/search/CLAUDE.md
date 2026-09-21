@@ -84,3 +84,10 @@ so the two cannot drift apart. Retrieval reads through the same alias. `api` com
 - **`Search` clears `Embedding` on every result**, and `_source` excludes it rather than
   listing the fields wanted, so a field added to the mapping is returned without anyone
   remembering to add it here too.
+- **`Search` is the only method with a deadline of its own.** `SEARCH_TIMEOUT` bounds one
+  kNN query because the agent's run context deliberately has none, so without it a hung
+  Elasticsearch would bound a run at nothing at all and `config.LoadAgentWorker`'s worst
+  case would not be honest. It does not apply to the bulk index or the
+  delete-by-document: those belong to ingestion and are bounded by
+  `INGEST_DOCUMENT_TIMEOUT`, which a ten-second cap would break. A zero value means a
+  caller built the config by hand — a test — and leaves the caller's context alone.

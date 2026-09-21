@@ -188,7 +188,8 @@ func (s *Store) ListRunsByIncident(ctx context.Context, incidentID string, p Pag
 	return paginate(out, p, func(r Run) string { return r.ID }), nil
 }
 
-// ClaimRun moves a run into RUNNING and reports whether it did.
+// ClaimRun moves a run into RUNNING, clears whatever a previous attempt left
+// behind, and reports whether it did.
 //
 // The same claim pattern as ClaimDocument, and for the same reason: false means
 // this Kafka message is a redelivery of a run already started, and the worker
@@ -203,19 +204,52 @@ func (s *Store) ListRunsByIncident(ctx context.Context, incidentID string, p Pag
 // retried because it is a pure function of a file; a failed investigation has
 // steps, tool calls and evidence recorded against it, and re-running it under
 // the same row would interleave two investigations in one timeline.
+//
+// This is the package's one multi-statement transaction. ADR 0009 makes a
+// restart begin the timeline again rather than splice it, which means deleting
+// the previous attempt's agent_steps — tool_calls and evidence cascade from
+// them — and resetting the four counters. Doing that as a separate method the
+// worker called afterwards would move half a state transition out of this
+// layer and would open a window in which a RUNNING run renders the previous
+// attempt's timeline as its own.
 func (s *Store) ClaimRun(ctx context.Context, runID string, lease time.Duration) (bool, error) {
-	const q = `UPDATE agent_runs
-	              SET status = ?, attempts = attempts + 1, started_at = ?, updated_at = ?
-	            WHERE id = ?
-	              AND ( status = ?
-	                 OR ( status = ? AND started_at < ? ) )`
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, dbError(err, "claim agent run")
+	}
+	// Rollback after a successful Commit is a no-op, so this covers every
+	// path out without the commit needing to clear it.
+	defer tx.Rollback() //nolint:errcheck // the deferred rollback's error is not actionable
+
+	const claim = `UPDATE agent_runs
+	                  SET status = ?, attempts = attempts + 1, started_at = ?, updated_at = ?,
+	                      step_count = 0, tool_call_count = 0,
+	                      prompt_tokens = 0, completion_tokens = 0
+	                WHERE id = ?
+	                  AND ( status = ?
+	                     OR ( status = ? AND started_at < ? ) )`
 	t := now()
-	res, err := s.db.ExecContext(ctx, q, RunRunning, t, t, runID,
+	res, err := tx.ExecContext(ctx, claim, RunRunning, t, t, runID,
 		RunPending, RunRunning, t.Add(-lease))
 	if err != nil {
 		return false, dbError(err, "claim agent run")
 	}
-	return changed(res, "claim agent run")
+	claimed, err := changed(res, "claim agent run")
+	if err != nil || !claimed {
+		// Not legal from the current state, so nothing is deleted either. The
+		// deferred rollback undoes the transaction.
+		return false, err
+	}
+
+	// One statement: tool_calls and evidence are ON DELETE CASCADE from
+	// agent_steps.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_steps WHERE run_id = ?`, runID); err != nil {
+		return false, dbError(err, "delete the previous attempt's steps")
+	}
+	if err := tx.Commit(); err != nil {
+		return false, dbError(err, "claim agent run")
+	}
+	return true, nil
 }
 
 // FinishRun writes the terminal state of a run, conditional on RUNNING so a
