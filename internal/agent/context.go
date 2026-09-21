@@ -13,6 +13,15 @@ import (
 // to persist it and a context that contained it would disagree with the audit
 // trail about what happened.
 type Turn struct {
+	// Number is the step number the loop recorded this turn under, and it is
+	// what labels the observation in the context.
+	//
+	// Without it the model has no way to learn the numbers finish's evidence
+	// cites: a none step spends a step number without leaving an assistant
+	// turn to count, so a model counting its own turns would cite the step
+	// before the one it meant.
+	Number int
+
 	// Call is the tool call that was executed. When several were returned,
 	// only this one appears — an assistant message whose other tool calls have
 	// no paired reply is exactly the history some providers reject.
@@ -24,6 +33,12 @@ type Turn struct {
 	// None marks a step whose response called no usable tool. It has no tool
 	// reply to pair with, so it renders as an instruction instead.
 	None bool
+
+	// Reason is why that response was unusable — no tool call, arguments that
+	// will not decode, a blank root_cause. It is rendered into the
+	// instruction, because a retry told only "call a tool" repeats whichever
+	// of those three it did.
+	Reason string
 }
 
 // ContextBuilder assembles the prompt. It only assembles — there is nothing
@@ -47,16 +62,18 @@ func (b ContextBuilder) Build(turns []Turn) []llm.Message {
 
 	for _, t := range turns {
 		if t.None {
-			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: noToolMessage})
+			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: noToolMessage(t.Number, t.Reason)})
 			continue
 		}
 		// Capped with the same helper and the same limit internal/store
 		// applies when persisting, so the context and the audit row cannot
-		// disagree about what was said.
+		// disagree about what was said. The step label is added after the cap,
+		// so it costs the observation nothing.
 		observation, _, _ := summary.Cap(t.Observation)
 		msgs = append(msgs,
 			llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{t.Call}},
-			llm.Message{Role: llm.RoleTool, ToolCallID: t.Call.ID, Content: observation},
+			llm.Message{Role: llm.RoleTool, ToolCallID: t.Call.ID,
+				Content: observationMessage(t.Number, observation)},
 		)
 	}
 	return msgs

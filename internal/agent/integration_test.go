@@ -204,6 +204,21 @@ func TestLiveRunProducesADiagnosis(t *testing.T) {
 	if outcome.PromptTokens == 0 {
 		t.Error("the provider reported no token usage")
 	}
+
+	// The step numbers a real model cites are the ones the context labelled,
+	// so its citations resolve to rows rather than being dropped. This is the
+	// only test that can catch a context that does not say what those numbers
+	// are — the scripted ones hand the model the right answer.
+	finish := steps[len(steps)-1]
+	if len(final.Evidence) > 0 && len(finish.Evidence) == 0 {
+		t.Errorf("the model cited %d steps and none of them resolved: %+v",
+			len(final.Evidence), final.Evidence)
+	}
+	for _, e := range finish.Evidence {
+		if e.StepID == "" || e.SourceType == "" {
+			t.Errorf("an evidence row resolved to nothing: %+v", e)
+		}
+	}
 }
 
 // liveDependencies is the setup both tests share: a real index built from the
@@ -243,7 +258,7 @@ func liveRun() Run {
 			CreatedAt: time.Now().UTC(),
 		},
 		Budget: Budget{
-			MaxSteps: 6, MaxToolCalls: 8,
+			MaxSteps: 6, MaxToolCalls: 4,
 			MaxRunDuration: 3 * time.Minute, MaxPromptTokens: 60000,
 		},
 	}

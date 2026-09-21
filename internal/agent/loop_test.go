@@ -267,7 +267,12 @@ func TestProseIsRecordedAsNoneAndRetriedOnce(t *testing.T) {
 	// The retry is an ordinary next iteration: the instruction is a user
 	// message the builder renders, not a second code path.
 	retry := h.llm.Requests()[1].Messages
-	assertContains(t, retry[len(retry)-1].Content, "called no usable tool", "the retry's last message")
+	last := retry[len(retry)-1].Content
+	assertContains(t, last, "exactly one of the tools", "the retry's last message")
+	// The instruction carries why the step was unusable and which step number
+	// it spent, so the retry can correct the actual mistake.
+	assertContains(t, last, "Step 1 was not usable", "the retry's last message")
+	assertContains(t, last, "called no tool", "the retry's last message")
 }
 
 func TestTwoProseResponsesInARowFailTheRun(t *testing.T) {
@@ -523,6 +528,41 @@ func TestInventedCitationsAreDroppedNotFatal(t *testing.T) {
 		t.Errorf("SourceRef = %q", ev[0].SourceRef)
 	}
 	assertContains(t, ev[0].Summary, "the pool saturates", "the evidence summary")
+}
+
+// A citation the loop cannot even decode is dropped like one that names a step
+// that never happened: json.Unmarshal is all or nothing, so reading the
+// evidence array as a whole would let one bad item discard a correct
+// diagnosis.
+func TestAnUndecodableCitationDoesNotDiscardTheDiagnosis(t *testing.T) {
+	// step as a string, and next_actions as a bare string where the schema
+	// asks for an array — both things a model does and neither of which says
+	// anything about whether the diagnosis is right.
+	args := `{"root_cause":"the pool is saturated","affected_service":"payment-service",` +
+		`"next_actions":"raise the pool size",` +
+		`"evidence":[{"step":"1","note":"unreadable"},{"step":1,"note":"readable"}]}`
+
+	h := newHarness(t, generous(),
+		llm.CallTurn("c1", ToolSearchKnowledge, map[string]any{"query": "payment latency"}),
+		llm.CallTurn("call_finish", ToolFinish, args),
+	)
+
+	outcome, err := h.agent.Run(context.Background(), h.run)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	assertOutcome(t, outcome, store.RunSucceeded, store.StopCompleted)
+
+	steps := stepsByNumber(h.reporter.recorded())
+	if steps[2].ActionType != store.ActionFinish {
+		t.Fatalf("step 2 = %s, want finish", steps[2].ActionType)
+	}
+	ev := steps[2].Evidence
+	if len(ev) != 1 || ev[0].Note != "readable" {
+		t.Errorf("evidence = %+v, want only the citation that decoded", ev)
+	}
+	// final_result still holds the arguments as they were given, unrepaired.
+	assertContains(t, string(outcome.FinalResult), `"step":"1"`, "final_result")
 }
 
 // A step that cannot be persisted means the audit trail is already wrong, so

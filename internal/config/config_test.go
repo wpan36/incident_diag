@@ -763,12 +763,18 @@ func TestLoadAgentDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
-	if a.MaxSteps != 8 || a.MaxToolCalls != 12 ||
+	if a.MaxSteps != 8 || a.MaxToolCalls != 6 ||
 		a.MaxRunDuration != 5*time.Minute || a.MaxPromptTokens != 60000 {
 		t.Errorf("defaults not applied: %+v", a)
 	}
 	if !strings.Contains(a.String(), "max_steps=8") {
 		t.Errorf("String() = %q", a.String())
+	}
+	// A step makes at most one tool call, so a tool-call bound at or above the
+	// step count could never fire.
+	if a.MaxToolCalls >= a.MaxSteps {
+		t.Errorf("AGENT_MAX_TOOL_CALLS (%d) is not below AGENT_MAX_STEPS (%d), so it can never fire",
+			a.MaxToolCalls, a.MaxSteps)
 	}
 }
 

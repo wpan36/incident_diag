@@ -263,7 +263,7 @@ func (a *Agent) observedStep(ctx context.Context, s *runState, started time.Time
 		return outcome, true, err
 	}
 
-	s.turns = append(s.turns, Turn{Call: call, Observation: obs.Text})
+	s.turns = append(s.turns, Turn{Number: s.stepNumber, Call: call, Observation: obs.Text})
 	s.noToolStreak = 0
 	return store.RunOutcome{}, false, nil
 }
@@ -276,8 +276,8 @@ func (a *Agent) observedStep(ctx context.Context, s *runState, started time.Time
 func (a *Agent) finishStep(ctx context.Context, s *runState, started time.Time,
 	args json.RawMessage, stopReason string,
 ) (store.RunOutcome, bool, error) {
-	var final FinalResult
-	if err := json.Unmarshal(args, &final); err != nil {
+	final, err := a.decodeFinal(s.run.ID, args)
+	if err != nil {
 		return a.noToolStep(ctx, s, started,
 			fmt.Sprintf("the arguments to %s could not be read: %v", ToolFinish, err))
 	}
@@ -323,7 +323,7 @@ func (a *Agent) noToolStep(ctx context.Context, s *runState, started time.Time, 
 		return outcome, true, err
 	}
 
-	s.turns = append(s.turns, Turn{None: true})
+	s.turns = append(s.turns, Turn{Number: s.stepNumber, None: true, Reason: reason})
 	s.noToolStreak++
 	if s.noToolStreak > 1 {
 		return s.failed(fmt.Sprintf("the model called no usable tool twice in a row: %s", reason)), true, nil
@@ -377,11 +377,11 @@ func (a *Agent) forceFinish(ctx context.Context, s *runState, stopReason string)
 			fmt.Sprintf("the model called %s when only %s was offered", name, ToolFinish))
 	}
 
-	var final FinalResult
+	final, decodeErr := a.decodeFinal(s.run.ID, args)
 	switch {
-	case json.Unmarshal(args, &final) != nil:
+	case decodeErr != nil:
 		return a.forcedFinishFailed(ctx, s, started, stopReason,
-			fmt.Sprintf("the arguments to %s could not be read", ToolFinish))
+			fmt.Sprintf("the arguments to %s could not be read: %v", ToolFinish, decodeErr))
 	case strings.TrimSpace(final.RootCause) == "":
 		return a.forcedFinishFailed(ctx, s, started, stopReason,
 			fmt.Sprintf("%s was called with an empty root_cause", ToolFinish))

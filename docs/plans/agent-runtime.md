@@ -101,8 +101,24 @@ nothing to prune**. The builder is the whole of it:
 | --- | --- |
 | system | the prompt (below) |
 | user | the incident: title, description, service, `created_at` |
-| per completed step | the `assistant` message the model returned — **the executed tool call only, never its `content`** — followed by the matching `role: "tool"` message carrying the provider's `tool_call_id` and the truncated observation |
-| per `none` step | one `user` message saying the previous response called no tool and that one of the listed tools must be called. A step with no tool call has no `tool` reply to pair with, and dropping it silently would leave the model no sign that it misbehaved — which is what the retry exists to correct |
+| per completed step | the `assistant` message the model returned — **the executed tool call only, never its `content`** — followed by the matching `role: "tool"` message carrying the provider's `tool_call_id` and the truncated observation, prefixed `Step <n> observation:` |
+| per `none` step | one `user` message naming the step number it spent, **why** the response was unusable, and that one of the listed tools must be called. A step with no tool call has no `tool` reply to pair with, and dropping it silently would leave the model no sign that it misbehaved — which is what the retry exists to correct |
+
+**Every observation is labelled with its step number**, because `finish` cites steps by
+number and nothing else in the context says what those numbers are. A `none` step spends a
+number without leaving an assistant turn to count, so a model counting its own turns would
+cite the step before the one it meant — and a citation resolved to the wrong step is written
+to `evidence` with no warning. The label goes on after `summary.Cap`, so the observation the
+context carries is still byte-for-byte the one the audit row holds.
+
+**The `none` instruction carries the reason.** Three things reach it — no tool call,
+arguments that will not decode, a `finish` whose `root_cause` is blank — and two of them did
+call a tool, so "call a tool" is the wrong correction and the retry repeats the mistake.
+
+**An observation is never sent empty.** A `tool` message with no `content` is rejected by
+OpenAI-compatible providers, and a 400 is in the family `internal/llm` does not retry, so one
+tool returning nothing would end the run — and end it again after the restart. An empty
+observation renders as a placeholder instead.
 
 A rendered text transcript would be simpler, but a tool call sent in history without its
 paired `tool` reply is rejected outright by some OpenAI-compatible providers, and M33 exists
@@ -292,8 +308,14 @@ question S1 built it for — which documents actually get cited — since a retr
 returns several. It is optional, and one field on a tool called once a run is a far smaller
 ask than the rejected alternative of a field on every tool schema.
 
-A step number or a `document_id` the model invents is **dropped with a warning** rather than
-failing the run: a wrong citation should not discard a correct diagnosis. An invented step
+A citation that is wrong, or that will not even decode, is **dropped with a warning** rather
+than failing the run: a wrong citation should not discard a correct diagnosis. So `finish`'s
+arguments are read in two stages — `root_cause` and `affected_service` strictly, then
+`next_actions` and each citation on its own — because `json.Unmarshal` is all or nothing and
+one item whose `step` is a string would otherwise throw away the diagnosis around it. Only
+arguments with no readable `root_cause` make the step a `none`.
+
+A step number or a `document_id` the model invents is dropped the same way. An invented step
 drops the row; an invented document leaves `document_id` `NULL` and keeps it. A citation
 naming a `none` step is dropped for the same reason: `source_type` has two values and neither
 describes a step that did nothing.
@@ -320,7 +342,7 @@ result; this spec records the consequence rather than pre-empting the choice.
 | Variable | Default | |
 | --- | --- | --- |
 | `AGENT_MAX_STEPS` | 8 | |
-| `AGENT_MAX_TOOL_CALLS` | 12 | |
+| `AGENT_MAX_TOOL_CALLS` | 6 | below `AGENT_MAX_STEPS`: a step makes at most one tool call, so a value at or above it can never fire |
 | `AGENT_MAX_RUN_DURATION` | 5m | wall-clock |
 | `AGENT_MAX_PROMPT_TOKENS` | 60000 | ceiling on one prompt |
 | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | see `.env.example` | already present |
@@ -424,8 +446,13 @@ belong to decisions made here:
   step number, an invented `document_id` and a citation naming a `none` step; and that no
   `content` reaches the recorded steps or the context.
 - `ContextBuilder`: the message sequence pairs every tool call with a `tool` reply —
-  including after a response whose extra tool calls were dropped — a `none` step renders as
-  its `user` instruction, and an over-cap observation is truncated whole-hit for retrieval.
+  including after a response whose extra tool calls were dropped — every observation is
+  labelled with the step number it was recorded under and a `none` step does not renumber
+  the step after it, a `none` step renders as its `user` instruction carrying the reason, an
+  empty observation never produces a `tool` message with no content, and an over-cap
+  observation is truncated whole-hit for retrieval.
+- A `finish` carrying one citation that will not decode still produces its diagnosis, with
+  that citation dropped.
 - `LoadAgent` fails when `MaxSteps` violates the context invariant.
 - `make test-integration` — one real run against DeepSeek with a live `ops-mcp`.
 

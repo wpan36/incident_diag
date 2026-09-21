@@ -15,14 +15,15 @@ database, no broker and no provider.
 - `agent.go` — the vocabulary: `Run`, `Incident`, `Budget`, `Action`, `Observation`,
   `Step`, `StepRef`, `ToolCall`, `Evidence`, `Citation`, `FinalResult`, the `ReportStep`
   callback, and the `ToolServer` and `ChunkSearcher` interfaces.
-- `prompt.go` — `SystemPrompt`, the incident, no-tool and forced-finish messages, and the
-  JSON Schemas for `search_knowledge` and `finish`.
+- `prompt.go` — `SystemPrompt`, the incident, observation, no-tool and forced-finish
+  messages, and the JSON Schemas for `search_knowledge` and `finish`.
 - `knowledge.go` — `Knowledge`, the in-process `search_knowledge`, and the hit rendering.
 - `context.go` — `Turn`, `ContextBuilder` and `EstimateTokens`.
 - `tools.go` — `Deps`, `Agent`, `New`, the one tool list from three sources, and the MCP
   call to `tool_calls.status` mapping.
 - `loop.go` — `Run`, the bounds, the prose retry, the forced finish and the step reporting.
-- `evidence.go` — resolving `finish`'s citations against the steps that happened.
+- `evidence.go` — decoding `finish`'s arguments and resolving its citations against the
+  steps that happened.
 - `integration_test.go` — `//go:build integration`, two tests over a real Elasticsearch
   index and a live in-process `ops-mcp`. The scripted one runs whenever the infrastructure
   is there; the one that adds the real provider skips unless `TEST_LLM_API_KEY` is set,
@@ -62,6 +63,27 @@ callback that writes rows and publishes events, and calls `FinishRun` with the o
   They would otherwise go into two JSON columns that MySQL refuses.
 - **The model's prose is never persisted or replayed.** The schema has nowhere for
   chain-of-thought, which is deliberate, and a test asserts it does not leak into either.
+- **Every observation in the context is labelled `Step <n> observation:`, and `Turn.Number`
+  is where that number comes from.** It is the only way the model learns the numbers
+  `finish` cites: a `none` step spends a number without leaving an assistant turn to count,
+  so a model counting its own turns would cite the step before the one it meant — and
+  `resolveEvidence` would write that to `evidence` without a warning. The label is added
+  after `summary.Cap`, so the audit row is unchanged.
+- **A `none` step's instruction carries `Turn.Reason`.** Two of the three responses that get
+  there did call a tool — `finish` with arguments that would not decode, and `finish` with a
+  blank `root_cause` — so "call a tool" would be the wrong correction and the retry would
+  repeat the mistake.
+- **An observation is never sent to the provider empty.** A `tool` message with no `content`
+  is rejected, and `internal/llm` does not retry a 400, so one tool returning nothing would
+  end the run and end it again after the restart. `observationMessage` substitutes a
+  placeholder.
+- **`finish`'s arguments are decoded in two stages** (`decodeFinal`): the two strings
+  strictly, then `next_actions` and each citation on its own. `json.Unmarshal` is all or
+  nothing, so reading the evidence array as a whole would let one citation whose `step` is a
+  string discard the diagnosis around it.
+- **`MaxToolCalls` must stay below `MaxSteps` to mean anything.** A step makes at most one
+  tool call, so a tool-call bound at or above the step count can never fire; the defaults are
+  8 and 6.
 - **The context is never pruned, and what makes that safe is `config.LoadAgent`'s
   invariant.** `EstimateTokens` must keep using `config.BytesPerToken`, or the run-time
   bound could fire on a configuration the loader had just accepted.

@@ -49,6 +49,12 @@ type Agent struct {
 	// MaxToolCalls bounds MCP tool invocations. Retrieval does not count
 	// toward it: search_knowledge writes no tool_calls row, and MaxSteps is
 	// what bounds retrieval.
+	//
+	// A step makes at most one tool call, so a value at or above MaxSteps is a
+	// bound that can never fire — MaxSteps would always stop the run first.
+	// The default is below it so that the separation between a step and a tool
+	// call means something: a run gets its remaining steps for retrieval and
+	// for finish once the operational budget is spent.
 	MaxToolCalls int
 
 	// MaxRunDuration is wall-clock and is checked between steps. It is
@@ -77,7 +83,7 @@ func LoadAgent() (Agent, error) {
 
 	a := Agent{
 		MaxSteps:        e.optionalInt("AGENT_MAX_STEPS", 8),
-		MaxToolCalls:    e.optionalInt("AGENT_MAX_TOOL_CALLS", 12),
+		MaxToolCalls:    e.optionalInt("AGENT_MAX_TOOL_CALLS", 6),
 		MaxRunDuration:  e.optionalDuration("AGENT_MAX_RUN_DURATION", 5*time.Minute),
 		MaxPromptTokens: e.optionalInt("AGENT_MAX_PROMPT_TOKENS", 60000),
 	}
