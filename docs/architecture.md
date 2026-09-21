@@ -180,9 +180,13 @@ The first version exposes three read-only tools:
 
 | Tool | Constraint |
 | --- | --- |
-| `prometheus_query` | fixed Prometheus endpoint from config |
-| `http_probe` | host/service allowlist, forced timeout, truncated body |
-| `read_service_logs` | jailed to configured directories; symlink and `..` escapes rejected |
+| `prometheus_query` | fixed Prometheus endpoint from config; bounded range, step and series |
+| `http_probe` | takes a service name, not a URL; forced timeout, truncated body |
+| `read_service_logs` | takes a service name, not a path; parsed and filtered structurally |
+
+No tool accepts a path or a URL. Each takes a name the server resolves against its own
+configuration, so path traversal is not defended against — it cannot be expressed. See
+[the tool boundary spec](plans/mcp-tool-boundary.md).
 
 ## LLM and embeddings
 
