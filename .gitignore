@@ -18,5 +18,15 @@ web/dist/
 .DS_Store
 *.swp
 
-# NOTE: .claude/ is intentionally NOT ignored. The rules, skills and context
-# hierarchy in this repo are part of the project, not local scratch.
+# .claude/ is intentionally NOT ignored: the rules, skills and context hierarchy
+# in this repo are part of the project, not local scratch. Two exceptions.
+#
+# settings.local.json holds one machine's permission grants. A global ignore
+# happens to cover it on the machine this was written on, which is exactly why
+# it is repeated here — a global ignore protects one checkout, not the repo.
+#
+# The .tmp.* siblings are what Claude Code writes while saving that file
+# atomically. One of them was committed by a `git add -A` before this rule
+# existed.
+.claude/settings.local.json
+.claude/settings.local.json.tmp.*
