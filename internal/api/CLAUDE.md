@@ -10,8 +10,8 @@ instead of something each handler must remember.
 
 ## Contents
 
-- `server.go` — `Server`, `NewServer` (store, file storage, `mq.Producer`, logger),
-  `Router` (gin routes and middleware order), `/healthz` and `/readyz`.
+- `server.go` — `Deps`, `Server`, `NewServer`, `Router` (gin routes and middleware order),
+  `/healthz` and `/readyz`.
 - `middleware.go` — `requestID` (honours a validated inbound `X-Request-ID`, otherwise
   mints a ULID), `requestLogger`, and `recovery`.
 - `errors.go` — the `errorBody` envelope, `renderError`, `renderCreated`, the `errTooLarge`
@@ -20,16 +20,20 @@ instead of something each handler must remember.
   `serviceNamePattern`.
 - `page.go` — the `list[T]` response shape and `parsePageParams`.
 - `time.go` — `TimeLayout`, the `Time` type and `NullTime`.
-- `responses.go` — the wire shapes `Incident` and `Document` and their converters.
+- `responses.go` — the wire shapes `Incident`, `Document` and `SearchResult`, and their
+  converters.
 - `incidents.go` — create, list and get, plus `decodeJSON` and `maxJSONBodyBytes`.
 - `documents.go` — the streaming multipart upload, the accepted extensions and document
   types, `enqueueIngestion`, plus list and get.
-- `api_test.go`, `documents_test.go` — unit tests against the router with fakes.
+- `search.go` — `GET /api/search`: parameter validation, then embed the query and retrieve.
+- `api_test.go`, `documents_test.go`, `search_test.go` — unit tests against the router with
+  fakes.
 - `integration_test.go` — `//go:build integration`. Real MySQL and a real directory.
 
 ## How it fits in
 
-The top of the `internal/` graph: it depends on `store`, `files`, `mq`, `httpx`, `id` and
+The top of the `internal/` graph: it depends on `store`, `files`, `mq`, `embed`, `search`,
+`httpx`, `id` and
 `log`, and nothing depends on it except `cmd/api`. It is where `httpx` kinds become status codes
 and where stored types become wire types.
 
@@ -104,3 +108,19 @@ and where stored types become wire types.
   drop the schema underneath them), and skip cleanly without `TEST_MYSQL_DSN`. Unlike the
   store's, they truncate nothing — each test tags its rows with a unique service name, so
   they can run against a database that already has data.
+
+- **`NewServer` takes a `Deps` struct, mirroring `ingest.Deps`.** Six positional parameters,
+  three of which tests pass as nil or as a fake, is how the wrong one gets passed without
+  the compiler noticing.
+- **`GET /api/search` is the only reason this package depends on `embed` and `search`**, and
+  it is why `cmd/api` now needs the embedding configuration. An inspection endpoint that
+  could not embed its query would be missing the point rather than saving a dependency. The
+  agent in Phase E calls `search.Client` in process; it does not go over HTTP.
+- **The search handler calls the embedder and the search client separately and classifies
+  their failures separately.** "The embedding provider is rate limiting" and "Elasticsearch
+  is down" are different operational problems, and a single 503 that does not say which one
+  wastes the first minute of every investigation into it. This is why `search.Search` takes
+  a vector rather than text.
+- **`/api/search` is not paginated** although it reuses `list[T]`. A kNN result has no stable
+  cursor — an index write can reorder it — and re-running the query is cheap. Reusing the
+  type keeps one response family across the API; `next_cursor` is simply never set.

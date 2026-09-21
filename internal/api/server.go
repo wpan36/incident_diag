@@ -16,10 +16,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wpan36/incident_diag/internal/embed"
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/httpx"
 	"github.com/wpan36/incident_diag/internal/id"
 	"github.com/wpan36/incident_diag/internal/mq"
+	"github.com/wpan36/incident_diag/internal/search"
 	"github.com/wpan36/incident_diag/internal/store"
 )
 
@@ -30,23 +32,38 @@ import (
 // might is a probe that reports "unhealthy" by timing out at the caller.
 const readinessTimeout = 2 * time.Second
 
+// Deps is what the handlers need, mirroring ingest.Deps.
+//
+// A struct rather than six positional parameters: three of them are interfaces
+// or pointers that tests pass as nil or as a fake, and positional arguments of
+// the same shape are how the wrong one gets passed without the compiler
+// noticing.
+//
+// Producer is here because creating a document is half of a dual write: the row
+// and the message that tells a worker about it. The handler does not treat the
+// message as part of the transaction — see uploadDocument — but it does have to
+// try.
+//
+// Embedder and Search are both required by GET /api/search and by nothing else.
+// That endpoint exists to make retrieval inspectable, so an API process that
+// could not embed a query would be missing the point rather than saving a
+// dependency.
+type Deps struct {
+	Store    *store.Store
+	Files    *files.Storage
+	Producer mq.Producer
+	Embedder embed.Embedder
+	Search   *search.Client
+	Logger   *slog.Logger
+}
+
 // Server holds what the handlers need. It is constructed once at startup.
 type Server struct {
-	store    *store.Store
-	files    *files.Storage
-	producer mq.Producer
-	logger   *slog.Logger
+	deps Deps
 }
 
 // NewServer builds the server and its router.
-//
-// The producer is here because creating a document is half of a dual write: the
-// row and the message that tells a worker about it. The handler does not treat
-// the message as part of the transaction — see uploadDocument — but it does
-// have to try.
-func NewServer(st *store.Store, fs *files.Storage, producer mq.Producer, logger *slog.Logger) *Server {
-	return &Server{store: st, files: fs, producer: producer, logger: logger}
-}
+func NewServer(deps Deps) *Server { return &Server{deps: deps} }
 
 // Router returns the configured HTTP handler.
 //
@@ -59,7 +76,7 @@ func (s *Server) Router() http.Handler {
 	// Order matters. requestID runs first so everything after it — including
 	// the log record and the error envelope — can see the identifier; recovery
 	// sits inside the logger so a panic still produces a request record.
-	r.Use(requestID(), requestLogger(s.logger), recovery(s.logger))
+	r.Use(requestID(), requestLogger(s.deps.Logger), recovery(s.deps.Logger))
 
 	r.NoRoute(func(c *gin.Context) {
 		renderError(c, httpx.NotFound("no such endpoint"))
@@ -80,6 +97,8 @@ func (s *Server) Router() http.Handler {
 		api.POST("/documents", s.uploadDocument)
 		api.GET("/documents", s.listDocuments)
 		api.GET("/documents/:id", s.getDocument)
+
+		api.GET("/search", s.search)
 	}
 	return r
 }
@@ -102,7 +121,7 @@ func (s *Server) readyz(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), readinessTimeout)
 	defer cancel()
 
-	if err := s.store.Ping(ctx); err != nil {
+	if err := s.deps.Store.Ping(ctx); err != nil {
 		renderError(c, err)
 		return
 	}

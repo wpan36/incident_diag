@@ -38,7 +38,7 @@ func (s *Server) createIncident(c *gin.Context) {
 		return
 	}
 
-	inc, err := s.store.CreateIncident(c.Request.Context(), store.NewIncident{
+	inc, err := s.deps.Store.CreateIncident(c.Request.Context(), store.NewIncident{
 		Title:       title,
 		Description: description,
 		Service:     service,
@@ -58,7 +58,7 @@ func (s *Server) listIncidents(c *gin.Context) {
 		return
 	}
 
-	page, err := s.store.ListIncidents(c.Request.Context(), p)
+	page, err := s.deps.Store.ListIncidents(c.Request.Context(), p)
 	if err != nil {
 		renderError(c, err)
 		return
@@ -77,7 +77,7 @@ func (s *Server) getIncident(c *gin.Context) {
 		return
 	}
 
-	inc, err := s.store.GetIncident(c.Request.Context(), incidentID)
+	inc, err := s.deps.Store.GetIncident(c.Request.Context(), incidentID)
 	if err != nil {
 		renderError(c, err)
 		return

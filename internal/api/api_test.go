@@ -46,7 +46,7 @@ func testServer(t *testing.T) (http.Handler, *files.Storage) {
 	if err != nil {
 		t.Fatalf("preparing file storage: %v", err)
 	}
-	return NewServer(nil, fs, &mq.FakeProducer{}, log.Discard()).Router(), fs
+	return NewServer(Deps{Files: fs, Producer: &mq.FakeProducer{}, Logger: log.Discard()}).Router(), fs
 }
 
 // testServerWithProducer is testServer for the tests that care what was
@@ -58,7 +58,7 @@ func testServerWithProducer(t *testing.T) (http.Handler, *files.Storage, *mq.Fak
 		t.Fatalf("preparing file storage: %v", err)
 	}
 	p := &mq.FakeProducer{}
-	return NewServer(nil, fs, p, log.Discard()).Router(), fs, p
+	return NewServer(Deps{Files: fs, Producer: p, Logger: log.Discard()}).Router(), fs, p
 }
 
 // testMaxUploadBytes is small enough that a test can exceed it cheaply.

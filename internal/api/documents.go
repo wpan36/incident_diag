@@ -69,7 +69,7 @@ func (s *Server) uploadDocument(c *gin.Context) {
 	// A backstop on the whole request, distinct from the per-file limit
 	// enforced while streaming. Without it a client could hold the connection
 	// open with unbounded non-file parts.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, s.files.MaxBytes()+multipartOverhead)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, s.deps.Files.MaxBytes()+multipartOverhead)
 
 	reader, err := c.Request.MultipartReader()
 	if err != nil {
@@ -83,7 +83,7 @@ func (s *Server) uploadDocument(c *gin.Context) {
 		// The file, if any, is already gone: readUpload cleans up before
 		// returning an error.
 		if errors.Is(err, files.ErrTooLarge) {
-			renderError(c, tooLarge("file must be at most %d bytes", s.files.MaxBytes()))
+			renderError(c, tooLarge("file must be at most %d bytes", s.deps.Files.MaxBytes()))
 			return
 		}
 		renderError(c, err)
@@ -104,7 +104,7 @@ func (s *Server) uploadDocument(c *gin.Context) {
 
 	// The row is inserted only after the file is safely on disk, so a crash
 	// leaves an orphaned file rather than a row pointing at nothing.
-	doc, err := s.store.CreateDocument(c.Request.Context(), store.NewDocument{
+	doc, err := s.deps.Store.CreateDocument(c.Request.Context(), store.NewDocument{
 		ID:            documentID,
 		Filename:      up.filename,
 		StoragePath:   up.saved.Path,
@@ -137,11 +137,11 @@ func (s *Server) uploadDocument(c *gin.Context) {
 // Being able to answer honestly here is the first thing the reconciler buys.
 func (s *Server) enqueueIngestion(c *gin.Context, documentID string) {
 	ctx := c.Request.Context()
-	err := s.producer.Produce(ctx, mq.TopicDocumentsIngest, documentID, mq.NewDocumentMessage(documentID))
+	err := s.deps.Producer.Produce(ctx, mq.TopicDocumentsIngest, documentID, mq.NewDocumentMessage(documentID))
 	if err == nil {
 		return
 	}
-	s.logger.ErrorContext(ctx, "could not enqueue document for ingestion",
+	s.deps.Logger.ErrorContext(ctx, "could not enqueue document for ingestion",
 		"document_id", documentID, "error", err)
 }
 
@@ -160,7 +160,7 @@ func (s *Server) readUpload(reader *multipart.Reader, documentID string) (upload
 			break
 		}
 		if err != nil {
-			s.files.Remove(documentID)
+			s.deps.Files.Remove(documentID)
 			return up, v, invalidBody(err)
 		}
 
@@ -176,7 +176,7 @@ func (s *Server) readUpload(reader *multipart.Reader, documentID string) (upload
 				part.Close()
 				continue
 			}
-			saved, err := s.files.Save(documentID, name, part)
+			saved, err := s.deps.Files.Save(documentID, name, part)
 			part.Close()
 			if err != nil {
 				// Save reports the reader's failure as it found it, and the
@@ -197,7 +197,7 @@ func (s *Server) readUpload(reader *multipart.Reader, documentID string) (upload
 		case "document_type":
 			value, tooLong, err := readFormValue(part)
 			if err != nil {
-				s.files.Remove(documentID)
+				s.deps.Files.Remove(documentID)
 				return up, v, invalidBody(err)
 			}
 			if tooLong {
@@ -214,7 +214,7 @@ func (s *Server) readUpload(reader *multipart.Reader, documentID string) (upload
 		case "service":
 			value, tooLong, err := readFormValue(part)
 			if err != nil {
-				s.files.Remove(documentID)
+				s.deps.Files.Remove(documentID)
 				return up, v, invalidBody(err)
 			}
 			if tooLong {
@@ -235,8 +235,8 @@ func (s *Server) readUpload(reader *multipart.Reader, documentID string) (upload
 
 // removeUpload deletes a file written for a request that then failed.
 func (s *Server) removeUpload(c *gin.Context, documentID string) {
-	if err := s.files.Remove(documentID); err != nil {
-		s.logger.WarnContext(c.Request.Context(), "could not remove the file of a failed upload",
+	if err := s.deps.Files.Remove(documentID); err != nil {
+		s.deps.Logger.WarnContext(c.Request.Context(), "could not remove the file of a failed upload",
 			"document_id", documentID, "error", err)
 	}
 }
@@ -339,7 +339,7 @@ func (s *Server) listDocuments(c *gin.Context) {
 		return
 	}
 
-	page, err := s.store.ListDocuments(c.Request.Context(), f, p)
+	page, err := s.deps.Store.ListDocuments(c.Request.Context(), f, p)
 	if err != nil {
 		renderError(c, err)
 		return
@@ -354,7 +354,7 @@ func (s *Server) getDocument(c *gin.Context) {
 		return
 	}
 
-	doc, err := s.store.GetDocument(c.Request.Context(), documentID)
+	doc, err := s.deps.Store.GetDocument(c.Request.Context(), documentID)
 	if err != nil {
 		renderError(c, err)
 		return

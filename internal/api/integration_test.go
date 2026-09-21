@@ -75,7 +75,7 @@ func liveRouterWithProducer(t *testing.T) (http.Handler, *files.Storage, *mq.Fak
 		t.Fatalf("preparing file storage: %v", err)
 	}
 	producer := &mq.FakeProducer{}
-	return NewServer(st, fs, producer, log.Discard()).Router(), fs, producer
+	return NewServer(Deps{Store: st, Files: fs, Producer: producer, Logger: log.Discard()}).Router(), fs, producer
 }
 
 // uniqueService returns a service name no other test will use, so a listing

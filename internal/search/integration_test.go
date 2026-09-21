@@ -342,3 +342,139 @@ func TestTheMappingIndexesTheVectorForKNN(t *testing.T) {
 		t.Errorf("nearest neighbour is %q, want %q", got, target)
 	}
 }
+
+// retrievableChunk is chunkFor with the fields the filters read, which the
+// write tests do not set.
+func retrievableChunk(documentID string, index int, service, documentType, content string) Chunk {
+	c := chunkFor(documentID, index, content)
+	c.Service = &service
+	c.DocumentType = documentType
+	c.Content = content
+	c.Embedding = embed.FakeVector(content, embed.Dimensions)
+	return c
+}
+
+// seedForSearch indexes three chunks that differ in both service and type, so
+// every filter has something to exclude.
+func seedForSearch(t *testing.T, c *Client) {
+	t.Helper()
+	if err := c.EnsureIndex(context.Background()); err != nil {
+		t.Fatalf("EnsureIndex: %v", err)
+	}
+	chunks := []Chunk{
+		retrievableChunk(id.New(), 0, "payment-service", "runbook", "alpha"),
+		retrievableChunk(id.New(), 0, "checkout-service", "runbook", "beta"),
+		retrievableChunk(id.New(), 0, "payment-service", "postmortem", "gamma"),
+	}
+	if err := c.IndexChunks(context.Background(), chunks); err != nil {
+		t.Fatalf("IndexChunks: %v", err)
+	}
+}
+
+func TestSearchRanksTheNearestChunkFirst(t *testing.T) {
+	c := testClient(t)
+	seedForSearch(t, c)
+
+	// FakeVector is deterministic, so querying with the vector of "alpha"
+	// makes that chunk an exact match and the ranking predictable.
+	results, err := c.Search(context.Background(), embed.FakeVector("alpha", embed.Dimensions), Query{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want all three", len(results))
+	}
+	if results[0].Content != "alpha" {
+		t.Errorf("first result is %q, want alpha", results[0].Content)
+	}
+	if results[0].Score < results[len(results)-1].Score {
+		t.Errorf("scores are ascending: %v then %v", results[0].Score, results[len(results)-1].Score)
+	}
+	// A thousand floats per hit would dominate every response and every
+	// debugging print, so the vector never comes back.
+	for _, r := range results {
+		if r.Embedding != nil {
+			t.Fatalf("result %s carries its embedding", r.ChunkID)
+		}
+	}
+	// The fields a citation needs have to survive the round trip, or a
+	// retrieved chunk cannot be attributed to a document.
+	if results[0].ChunkID == "" || results[0].DocumentID == "" || results[0].Source == "" ||
+		results[0].HeadingPath == "" || results[0].Service == nil {
+		t.Errorf("a citation field is missing: %+v", results[0])
+	}
+}
+
+func TestSearchFiltersNarrowTheResult(t *testing.T) {
+	c := testClient(t)
+	seedForSearch(t, c)
+	ctx := context.Background()
+	vector := embed.FakeVector("alpha", embed.Dimensions)
+
+	cases := []struct {
+		name  string
+		query Query
+		want  []string
+	}{
+		{"service", Query{Service: "payment-service"}, []string{"alpha", "gamma"}},
+		{"document type", Query{DocumentType: "postmortem"}, []string{"gamma"}},
+		{"both", Query{Service: "payment-service", DocumentType: "runbook"}, []string{"alpha"}},
+		{"no match", Query{Service: "billing-service"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			results, err := c.Search(ctx, vector, tc.query)
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			got := make([]string, 0, len(results))
+			for _, r := range results {
+				got = append(got, r.Content)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			seen := map[string]bool{}
+			for _, g := range got {
+				seen[g] = true
+			}
+			for _, w := range tc.want {
+				if !seen[w] {
+					t.Errorf("got %v, want it to contain %q", got, w)
+				}
+			}
+		})
+	}
+}
+
+func TestSearchHonoursK(t *testing.T) {
+	c := testClient(t)
+	seedForSearch(t, c)
+
+	results, err := c.Search(context.Background(),
+		embed.FakeVector("alpha", embed.Dimensions), Query{K: 2})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+}
+
+func TestSearchOnAnEmptyIndexReturnsNothing(t *testing.T) {
+	c := testClient(t)
+	if err := c.EnsureIndex(context.Background()); err != nil {
+		t.Fatalf("EnsureIndex: %v", err)
+	}
+
+	// Nothing to match is a normal answer, not an error. The agent asks a
+	// question before anything has been ingested at least once per deployment.
+	results, err := c.Search(context.Background(),
+		embed.FakeVector("alpha", embed.Dimensions), Query{})
+	if err != nil {
+		t.Fatalf("Search on an empty index: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d results from an empty index", len(results))
+	}
+}

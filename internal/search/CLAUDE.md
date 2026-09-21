@@ -9,8 +9,10 @@ performs.
 
 - `search.go` — `Client`, `New`, `EnsureIndex` and the alias rules, `mapping`, `IndexChunks`
   with its bulk retry, `DeleteByDocument`; the `Chunk` document, `ChunkID`, `BulkItemError`.
-- `search_test.go` — unit tests against a fake cluster, for the two replies a real one almost
-  never produces.
+- `retrieve.go` — `Search`, `Query`, `Result`, `searchBody` and `clampK`; `DefaultK` and
+  `MaxK`.
+- `search_test.go`, `retrieve_test.go` — unit tests against a fake cluster, and the request
+  body and clamping as pure functions.
 - `integration_test.go` — the alias state table, kNN, and delete-by-document against real
   Elasticsearch.
 
@@ -18,7 +20,8 @@ performs.
 
 `cmd/ingestion-worker` calls `EnsureIndex` at startup, mirroring `mq.EnsureTopics`, and hands
 the client to `ingest.Deps.Search`. The mapping's vector length comes from `embed.Dimensions`,
-so the two cannot drift apart. Retrieval (M11) reads through the same alias.
+so the two cannot drift apart. Retrieval reads through the same alias. `api` composes `embed` and this package for
+`GET /api/search`; the agent will do the same in process.
 
 ## Gotchas
 
@@ -60,3 +63,21 @@ so the two cannot drift apart. Retrieval (M11) reads through the same alias.
   highlightable for debugging, and means the mapping need not change if that is revisited.
 - **The fake cluster in `search_test.go` must send `X-Elastic-Product: Elasticsearch`**, or
   the v8 client refuses to talk to it at all.
+
+- **`Search` takes a vector, not text.** This package depends on `internal/embed` for one
+  constant and nothing else. Holding an `Embedder` would put the retrieval path's timeout and
+  retry policy here, while the failure it is most likely to hit — the hosted provider being
+  slow or rate limiting — belongs to a different dependency. Callers compose the two, which
+  is what lets them say which one failed.
+- **The filters go inside the kNN clause, not beside it.** A post-filter asks for the k
+  nearest chunks overall and then discards the ones from other services, so it returns fewer
+  than k — or none — exactly when the filter is doing something.
+- **`num_candidates` is `max(50, 10k)` capped at 1000.** Below the corpus size it silently
+  costs recall; above it costs nothing at this scale. Being generous is the setting that
+  cannot quietly go wrong.
+- **A search that reports failed shards is an error, not a short result.** Elasticsearch
+  reports a failed shard inside the body of a 200, and an incomplete retrieval answered as a
+  complete one surfaces much later as a diagnosis that missed the obvious runbook.
+- **`Search` clears `Embedding` on every result**, and `_source` excludes it rather than
+  listing the fields wanted, so a field added to the mapping is returned without anyone
+  remembering to add it here too.

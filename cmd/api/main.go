@@ -17,9 +17,11 @@ import (
 
 	"github.com/wpan36/incident_diag/internal/api"
 	"github.com/wpan36/incident_diag/internal/config"
+	"github.com/wpan36/incident_diag/internal/embed"
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/log"
 	"github.com/wpan36/incident_diag/internal/mq"
+	"github.com/wpan36/incident_diag/internal/search"
 	"github.com/wpan36/incident_diag/internal/shutdown"
 	"github.com/wpan36/incident_diag/internal/store"
 )
@@ -44,13 +46,16 @@ func run() error {
 	httpCfg, httpErr := config.LoadHTTPServer()
 	docCfg, docErr := config.LoadDocuments()
 	kafkaCfg, kafkaErr := config.LoadKafka()
-	if err := errors.Join(cfgErr, dbErr, httpErr, docErr, kafkaErr); err != nil {
+	embedCfg, embedErr := config.LoadEmbedding()
+	searchCfg, searchErr := config.LoadSearch()
+	if err := errors.Join(cfgErr, dbErr, httpErr, docErr, kafkaErr, embedErr, searchErr); err != nil {
 		return err
 	}
 
 	logger := log.New(os.Stdout, cfg.LogLevel)
 	logger.Info("starting api", "config", cfg.String(), "database", dbCfg.String(),
-		"http", httpCfg.String(), "documents", docCfg.String(), "kafka", kafkaCfg.String())
+		"http", httpCfg.String(), "documents", docCfg.String(), "kafka", kafkaCfg.String(),
+		"embedding", embedCfg.String(), "search", searchCfg.String())
 
 	// Signals become a cancelled context before anything is opened, so a
 	// Ctrl-C during startup is honoured rather than queued.
@@ -87,13 +92,31 @@ func run() error {
 	}
 	closers.Add("kafka producer", func(context.Context) error { return producer.Close() })
 
+	// Both are needed by GET /api/search and by nothing else. Neither connects
+	// here: the embedding client dials on its first request, and the search
+	// client only opens on its first query. EnsureIndex is not called — the
+	// ingestion worker owns the index, so two processes cannot race to create
+	// it, which is the same division already made for Kafka topics.
+	embedder := embed.New(embedCfg, logger)
+	searcher, err := search.New(searchCfg, logger)
+	if err != nil {
+		return err
+	}
+
 	// gin's debug mode writes its own startup banner and per-route lines, which
 	// would be the only unstructured output this process produces.
 	gin.SetMode(gin.ReleaseMode)
 
 	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewServer(st, fs, producer, logger).Router(),
+		Addr: cfg.HTTPAddr,
+		Handler: api.NewServer(api.Deps{
+			Store:    st,
+			Files:    fs,
+			Producer: producer,
+			Embedder: embedder,
+			Search:   searcher,
+			Logger:   logger,
+		}).Router(),
 		ReadHeaderTimeout: httpCfg.ReadHeaderTimeout,
 		ReadTimeout:       httpCfg.ReadTimeout,
 		WriteTimeout:      httpCfg.WriteTimeout,
