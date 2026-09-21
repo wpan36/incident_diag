@@ -20,7 +20,7 @@ The test to apply is the one `write-spec` states: could a fresh session, given o
 spec and the relevant `CLAUDE.md` files, implement this correctly? If the answer depends
 on something only the original conversation knows, it has to be written down.
 
-## Two standing rules for Claude
+## Three standing rules for Claude
 
 ### Stop and ask when a decision is uncertain
 
@@ -35,6 +35,25 @@ summary.
 
 "I'll do it this way for now and you can change it later" is not a way around this.
 Contract-shaped decisions are not cheap to change.
+
+### Never present options without a recommendation
+
+Asking is required; asking well means arriving with a reasoned position rather than an
+inventory. Every set of options carries three things:
+
+- **A recommendation**, marked as such. Always one — laying out three choices and leaving
+  them open hands back the work the question was meant to move forward.
+- **A justification grounded in this system**, not in the abstract: the packages already
+  written, the decisions already recorded in `docs/adr/` and `docs/plans/`, the conventions
+  the code already follows, the infrastructure already running. "More idiomatic" is not a
+  justification. "Matches how `internal/mq` already creates topics idempotently at startup,
+  so there is one pattern instead of two" is.
+- **What the recommendation costs**, and what would have to be true for a different option
+  to win. An option presented with only upside has not been thought about.
+
+The failure mode to avoid is pros and cons that would read the same in any project. The
+value of a recommendation comes from knowing this one: which earlier decision an option
+would contradict, which existing code it could reuse, which settled trade-off it reopens.
 
 ### Announce the points where the user must act
 

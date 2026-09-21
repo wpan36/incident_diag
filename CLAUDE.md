@@ -23,7 +23,7 @@ New session? Read these, in this order:
 Nothing important lives only in a conversation. If a decision is not in `docs/`, it has
 been lost, and the right move is to ask rather than to guess.
 
-## Two rules that override convenience
+## Three rules that override convenience
 
 **Stop and ask when a decision is uncertain.** Schema shapes, message and event formats,
 API surfaces, tool parameters, new dependencies, trade-off-laden implementation paths, and
@@ -31,6 +31,13 @@ any request with more than one reasonable reading — all of these stop and ask 
 picking a default. Only details with an overwhelming industry default and a cheap reversal
 (naming, log wording, test layout) get decided unilaterally, and those get mentioned in
 the milestone summary.
+
+**Never present options without a recommendation.** Every set of choices carries one
+recommended option, justified against *this* system — the packages already written, the
+decisions already in `docs/adr/`, the conventions the code already follows — together with
+what that recommendation costs and what would make a different option win. Generic pros and
+cons are the failure mode; a menu with no position on it hands back the work that was asked
+for. See `docs/workflow.md`.
 
 **Announce when the user has to act.** `design-discussion`, `write-spec`, `goldfish-test`
 and `mean-review` are invoked by the user, and the last two require a brand new session
