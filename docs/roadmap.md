@@ -109,4 +109,25 @@ Specified by S6, which is written at the top of Phase C.
 | M32 | Agent evaluation (Tier B): run the agent against every injectable fault scenario and report diagnosis accuracy, steps, tool calls, token cost and latency percentiles in `docs/agent-eval.md`. Includes scenarios the agent should fail to diagnose, so the numbers mean something | todo |
 | M33 | Provider-switch smoke test against a second hosted OpenAI-compatible provider; finish `docs/architecture.md`, demo script, screenshots, README | todo |
 
+**What M32 has to be, to be worth reporting.** Three scenarios give an accuracy with four
+possible values, which is a smoke test wearing a benchmark's clothes. Three requirements,
+agreed before the milestone was specified:
+
+- **Eight to ten scenarios, built around one symptom with several root causes.** A rising
+  p99 on payment-service can be pool saturation, a slow processor, or a CPU regression, and
+  the runbooks prescribe *opposite* remediations for them. Telling those apart is the
+  product's core claim; one scenario per fault kind never tests it.
+- **Several runs per scenario, reported as a distribution.** An LLM is not deterministic, so
+  a single pass cannot say how much of an accuracy figure was luck.
+- **The full trajectory of every run, not just the verdict.** "Wrong" and "wrong, but it
+  queried the right metric at step 3 and misread it" are different problems, and only the
+  second says what to change.
+
+**A constraint the lab imposes.** `/fault` toggles latency, errors and CPU at runtime, but
+`PAYMENT_POOL_SIZE` and `PAYMENT_PROCESSOR_LATENCY_MS` are startup configuration. So
+"the pool is undersized" and "the pool is saturated because the processor is slow" — the
+sharpest pair in the list above — cannot both be produced without either restarting a
+service between scenarios or giving the lab runtime control of those two values. Whichever
+M32 chooses, it is a decision that milestone has to make rather than discover.
+
 *Phase close:* full-repository `mean-review`, root `CLAUDE.md`.
