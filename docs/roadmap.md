@@ -32,8 +32,8 @@ written, goldfish-tested and committed before those milestones are implemented.
 | M8 | `internal/embed`: OpenAI-compatible embedding client for hosted `BAAI/bge-m3` (SiliconFlow), with batching, timeouts and bounded retries | **done** |
 | M9 | Elasticsearch single node; chunk mapping with `dense_vector`; bulk index and delete-by-document | **done** |
 | M10 | `ingestion-worker` end to end: the M6 placeholder handler is replaced with parse → chunk → embed → index → `READY`/`FAILED` | **done** |
-| M11 | Dense kNN retrieval with metadata filtering; `GET /api/search` for debugging (Tier B) | todo |
-| M12 | Knowledge corpus in `testdata/knowledge/` (runbook, postmortem, service docs) and the evaluation set built from it; a repeatable Go test reporting Recall@1/3/5, baseline in `docs/rag-eval.md`. The corpus is written once here and reused by Phase C and the agent evaluation. **It must contain deliberate confusables** — several documents sharing symptoms and metric names, so a query has to discriminate rather than match the only document on its topic; see the note below (Tier B) | todo |
+| M11 | Dense kNN retrieval with metadata filtering; `GET /api/search` for debugging (Tier B) | **done** |
+| M12 | Knowledge corpus in `testdata/knowledge/` (runbook, postmortem, service docs) and the evaluation set built from it; a repeatable Go test reporting Recall@1/3/5, baseline in `docs/rag-eval.md`. The corpus is written once here and reused by Phase C and the agent evaluation. **It must contain deliberate confusables** — several documents sharing symptoms and metric names, so a query has to discriminate rather than match the only document on its topic; see the note below (Tier B) | **done** |
 
 **Why M12's corpus needs confusables.** Measured after M10: a full runbook produces about
 four chunks and a short one produces a single chunk. Ten unrelated documents therefore give

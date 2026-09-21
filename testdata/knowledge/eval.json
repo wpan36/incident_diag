@@ -1,0 +1,94 @@
+{
+  "queries": [
+    {
+      "query": "payment p99 is above two seconds but nothing is erroring",
+      "note": "against checkout's latency runbook, which describes the same symptom for the other service",
+      "relevant": [{ "source": "payment-latency-runbook.md", "must_contain": "error rate usually stays flat" }]
+    },
+    {
+      "query": "checkout is returning 504s but payment-service looks healthy",
+      "note": "the sharpest confusable: the answer is in checkout's runbook, not payment's",
+      "relevant": [{ "source": "checkout-latency-runbook.md", "must_contain": "CHECKOUT_PAYMENT_TIMEOUT" }]
+    },
+    {
+      "query": "how do I tell whether a connection pool is actually the bottleneck",
+      "relevant": [{ "source": "connection-pool-runbook.md", "must_contain": "pool_wait_seconds" }]
+    },
+    {
+      "query": "should I raise the pool size when the card processor is slow",
+      "note": "two documents answer this and both are correct",
+      "relevant": [
+        { "source": "payment-latency-runbook.md", "must_contain": "how a slow dependency becomes a" },
+        { "source": "connection-pool-runbook.md", "must_contain": "Never raise a pool size" }
+      ]
+    },
+    {
+      "query": "what happened in the March incident where payment ran out of connections",
+      "relevant": [{ "source": "postmortem-2026-03-payment-pool.md" }]
+    },
+    {
+      "query": "why is the pool size derived from the replica count instead of being a constant",
+      "relevant": [
+        { "source": "postmortem-2026-03-payment-pool.md", "must_contain": "derived from the replica count" },
+        { "source": "connection-pool-runbook.md", "must_contain": "Derive the value from the replica count" }
+      ]
+    },
+    {
+      "query": "what is the latency objective for placing an order",
+      "note": "checkout's SLO, not payment's",
+      "relevant": [{ "source": "checkout-service.md", "must_contain": "1500ms" }]
+    },
+    {
+      "query": "who do I page when payment-service is broken",
+      "relevant": [
+        { "source": "payment-service.md", "must_contain": "payments-oncall" },
+        { "source": "payment-latency-runbook.md", "must_contain": "payments-oncall" }
+      ]
+    },
+    {
+      "query": "latency rose on every endpoint at once right after a deployment",
+      "relevant": [
+        { "source": "cpu-saturation-runbook.md", "must_contain": "uniformity is the signal" },
+        { "source": "postmortem-2026-07-cpu-regression.md", "must_contain": "signature verification" }
+      ]
+    },
+    {
+      "query": "our health endpoint became slow even though it calls nothing",
+      "relevant": [
+        { "source": "cpu-saturation-runbook.md", "must_contain": "cannot get scheduled" },
+        { "source": "postmortem-2026-07-cpu-regression.md", "must_contain": "/health" }
+      ]
+    },
+    {
+      "query": "what is the difference between a 500 and a 503 when triaging",
+      "relevant": [{ "source": "error-rate-runbook.md", "must_contain": "separate 500 from 503" }]
+    },
+    {
+      "query": "the 5xx rate jumped right after someone turned on load shedding",
+      "relevant": [{ "source": "error-rate-runbook.md", "must_contain": "payment_shed_low_value" }]
+    },
+    {
+      "query": "a customer was charged but no order exists",
+      "relevant": [
+        { "source": "checkout-latency-runbook.md", "must_contain": "correctness incident" },
+        { "source": "postmortem-2026-05-checkout-timeout.md", "must_contain": "no order ever used" },
+        { "source": "postmortem-2026-03-payment-pool.md", "must_contain": "charged for orders that were never created" }
+      ]
+    },
+    {
+      "query": "how many connections does the card processor allow us",
+      "relevant": [
+        { "source": "payment-service.md", "must_contain": "200 concurrent connections" },
+        { "source": "payment-latency-runbook.md", "must_contain": "200 concurrent connections" }
+      ]
+    },
+    {
+      "query": "why did checkout start failing after we tightened a timeout",
+      "relevant": [{ "source": "postmortem-2026-05-checkout-timeout.md", "must_contain": "below payment-service's documented p99 budget" }]
+    },
+    {
+      "query": "how do I size a pool so it does not break a shared dependency",
+      "relevant": [{ "source": "connection-pool-runbook.md", "must_contain": "second constraint is the one people forget" }]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "documents": [
+    { "source": "payment-service.md", "service": "payment-service", "document_type": "service_doc" },
+    { "source": "checkout-service.md", "service": "checkout-service", "document_type": "service_doc" },
+    { "source": "payment-latency-runbook.md", "service": "payment-service", "document_type": "runbook" },
+    { "source": "checkout-latency-runbook.md", "service": "checkout-service", "document_type": "runbook" },
+    { "source": "connection-pool-runbook.md", "service": null, "document_type": "runbook" },
+    { "source": "cpu-saturation-runbook.md", "service": null, "document_type": "runbook" },
+    { "source": "error-rate-runbook.md", "service": null, "document_type": "runbook" },
+    { "source": "postmortem-2026-03-payment-pool.md", "service": "payment-service", "document_type": "postmortem" },
+    { "source": "postmortem-2026-05-checkout-timeout.md", "service": "checkout-service", "document_type": "postmortem" },
+    { "source": "postmortem-2026-07-cpu-regression.md", "service": "payment-service", "document_type": "postmortem" }
+  ]
+}
