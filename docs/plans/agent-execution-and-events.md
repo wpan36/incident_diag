@@ -41,8 +41,9 @@ step completes, so the browser shows nothing while one runs — an LLM call plus
 roughly four seconds. Closing that gap means another hook on the agent package's seam, which
 has just been mean-reviewed and is clean. Changing a just-reviewed interface for a latency
 nobody has measured is the wrong trade; M28 will have a UI to judge it with, and adding a
-`step.started` event then is additive. M27's `answer.delta` is additive in the same way and
-is S9's to define; this spec fixes the vocabulary M24 ships, not the vocabulary forever.
+`step.started` event then is additive. S9 considered a fourth event for the diagnosis and
+cancelled it ([ADR 0010](../adr/0010-no-answer-delta.md)); this spec fixes the vocabulary
+M24 ships, not the vocabulary forever.
 
 **The event payload reuses the API's wire types**, so the front end has one `Step` type
 rather than two that have to agree. `Run` and `Step` are defined under *Response shapes*

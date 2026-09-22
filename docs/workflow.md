@@ -81,7 +81,7 @@ stale as the source changes.
 
 ## Which milestones get the full treatment
 
-Running design discussion, spec writing and a goldfish test for all 33 milestones would
+Running design discussion, spec writing and a goldfish test for all 32 milestones would
 cost more than it returns. The dividing line is fixed in advance so it does not get
 re-argued each time.
 

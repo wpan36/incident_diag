@@ -328,14 +328,13 @@ content — until the run ends. That is what validates a cited `document_id` and
 `docs/architecture.md` calls the diagnosis's *references* is this evidence, not a separate
 field; that sentence is updated alongside this spec.
 
-### Streaming is M27's problem, not M21's
+### M21 does not stream, and nothing after it does either
 
-M21 does not stream. The final diagnosis arrives as the arguments of a `finish` tool call,
-not as assistant `content`, so streaming it to the browser as `answer.delta` means streaming
-**tool-call argument deltas** — a different mechanism from streaming prose, and one nothing
-before M27 needs. Building it now would be building it against a consumer that does not
-exist. M27 or S9 decides between streaming those deltas and re-rendering the completed
-result; this spec records the consequence rather than pre-empting the choice.
+The final diagnosis arrives as the arguments of a `finish` tool call, not as assistant
+`content`, so streaming it would mean streaming **tool-call argument deltas** — a different
+mechanism from streaming prose. This spec deferred the choice to S9, which took it: there is
+no streamed diagnosis, and the event vocabulary stays at S8's three
+([ADR 0010](../adr/0010-no-answer-delta.md)).
 
 ### Configuration
 
