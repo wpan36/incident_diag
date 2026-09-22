@@ -18,6 +18,7 @@ import (
 
 	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/embed"
+	"github.com/wpan36/incident_diag/internal/events"
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/httpx"
 	"github.com/wpan36/incident_diag/internal/id"
@@ -54,24 +55,42 @@ const readinessTimeout = 2 * time.Second
 // run. They are here rather than read per request because a run has to keep
 // the bounds it was created with, and because that is what makes the API
 // process need AGENT_* and LLM_MODEL at all — it runs no agent itself.
+//
+// EventReader and Events are GET /api/runs/{id}/events and nothing else. The
+// configuration is carried the way Agent already is — a value the handlers
+// need rather than re-read — because the SSE loop derives its write deadline
+// and its heartbeat from it on every frame.
 type Deps struct {
-	Store    *store.Store
-	Files    *files.Storage
-	Producer mq.Producer
-	Embedder embed.Embedder
-	Search   *search.Client
-	Agent    config.Agent
-	LLMModel string
-	Logger   *slog.Logger
+	Store       *store.Store
+	Files       *files.Storage
+	Producer    mq.Producer
+	Embedder    embed.Embedder
+	Search      *search.Client
+	EventReader events.Reader
+	Agent       config.Agent
+	Events      config.Events
+	LLMModel    string
+	Logger      *slog.Logger
+}
+
+// runReader is the part of the store the SSE endpoint reads a run through.
+//
+// It exists for one reason: the unit tests drive that endpoint's 410 and its
+// terminal re-read without a MySQL to put a run in. Every other handler takes
+// *store.Store directly, and so does this one in production — NewServer points
+// the field at Deps.Store.
+type runReader interface {
+	GetRun(ctx context.Context, id string) (store.Run, error)
 }
 
 // Server holds what the handlers need. It is constructed once at startup.
 type Server struct {
 	deps Deps
+	runs runReader
 }
 
 // NewServer builds the server and its router.
-func NewServer(deps Deps) *Server { return &Server{deps: deps} }
+func NewServer(deps Deps) *Server { return &Server{deps: deps, runs: deps.Store} }
 
 // Router returns the configured HTTP handler.
 //
@@ -110,6 +129,7 @@ func (s *Server) Router() http.Handler {
 		api.GET("/documents/:id", s.getDocument)
 
 		api.GET("/runs/:id", s.getRun)
+		api.GET("/runs/:id/events", s.streamRunEvents)
 
 		api.GET("/search", s.search)
 	}

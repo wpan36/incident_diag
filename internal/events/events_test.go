@@ -1,6 +1,9 @@
 package events
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestStreamKeyNamesTheRun(t *testing.T) {
 	// The name is the contract M26 reads by, and one stream per run is what
@@ -62,3 +65,48 @@ type testError struct{}
 func (testError) Error() string { return "redis is down" }
 
 var errTest = testError{}
+
+func TestTheFakeReaderResumesAndBlocks(t *testing.T) {
+	f := &FakeReader{Block: 5 * time.Millisecond}
+	f.Add(ReadEvent{ID: "1-0", Name: RunStarted}, ReadEvent{ID: "2-0", Name: RunFinished})
+
+	names := func(after string, call func(func(ReadEvent) error) error) []string {
+		t.Helper()
+		var got []string
+		if err := call(func(ev ReadEvent) error {
+			got = append(got, ev.Name)
+			return nil
+		}); err != nil {
+			t.Fatalf("reading: %v", err)
+		}
+		return got
+	}
+
+	got := names("", func(fn func(ReadEvent) error) error { return f.Replay(t.Context(), "run-1", "", fn) })
+	if len(got) != 2 {
+		t.Errorf("Replay from the start yielded %v, want both events", got)
+	}
+	got = names("1-0", func(fn func(ReadEvent) error) error { return f.Replay(t.Context(), "run-1", "1-0", fn) })
+	if len(got) != 1 || got[0] != RunFinished {
+		t.Errorf("Replay after 1-0 yielded %v, want just run.finished", got)
+	}
+
+	// An empty follow waits out its block, which is what makes the SSE
+	// handler's idle round reachable without a Redis.
+	start := time.Now()
+	got = names("2-0", func(fn func(ReadEvent) error) error { return f.Follow(t.Context(), "run-1", "2-0", fn) })
+	if len(got) != 0 {
+		t.Errorf("Follow past the end yielded %v", got)
+	}
+	if time.Since(start) < 5*time.Millisecond {
+		t.Error("Follow returned without waiting out its block")
+	}
+
+	f.Err = errTest
+	if err := f.Replay(t.Context(), "run-1", "", func(ReadEvent) error { return nil }); err != errTest {
+		t.Errorf("Replay with Err set returned %v, want the error", err)
+	}
+	if err := f.Follow(t.Context(), "run-1", "", func(ReadEvent) error { return nil }); err != errTest {
+		t.Errorf("Follow with Err set returned %v, want the error", err)
+	}
+}

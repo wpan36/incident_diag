@@ -29,6 +29,7 @@ func isolate(t *testing.T) {
 		"EMBED_BATCH_SIZE", "EMBED_TIMEOUT", "EMBED_MAX_RETRIES",
 		"ELASTICSEARCH_URL", "ES_INDEX_ALIAS", "SEARCH_TIMEOUT",
 		"REDIS_URL", "REDIS_PUBLISH_TIMEOUT", "EVENT_STREAM_MAXLEN", "EVENT_STREAM_TTL",
+		"SSE_HEARTBEAT", "SSE_READ_BLOCK",
 		"LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_TIMEOUT", "LLM_MAX_RETRIES",
 		"AGENT_MAX_STEPS", "AGENT_MAX_TOOL_CALLS", "AGENT_MAX_RUN_DURATION",
 		"AGENT_MAX_PROMPT_TOKENS",
@@ -834,9 +835,36 @@ func TestLoadEventsDefaults(t *testing.T) {
 	if c.PublishTimeout != 2*time.Second || c.StreamMaxLen != 1000 || c.StreamTTL != 24*time.Hour {
 		t.Errorf("defaults not applied: %+v", c)
 	}
+	if c.Heartbeat != 20*time.Second || c.ReadBlock != 5*time.Second {
+		t.Errorf("SSE defaults not applied: %+v", c)
+	}
 	// The URL can carry a password, so it must not reach a log line.
 	if strings.Contains(c.String(), "127.0.0.1") {
 		t.Errorf("String() leaks the connection string: %q", c.String())
+	}
+}
+
+// The SSE write deadline is twice the heartbeat, and the heartbeat is only
+// checked between two blocking reads. Both relationships are enforced at
+// startup rather than discovered as a stream that goes silent or a client cut
+// mid-frame.
+func TestLoadEventsChecksTheSSEIntervals(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"a heartbeat under the floor":         {"SSE_HEARTBEAT": "1s"},
+		"a read block equal to the heartbeat": {"SSE_HEARTBEAT": "5s", "SSE_READ_BLOCK": "5s"},
+		"a read block above the heartbeat":    {"SSE_HEARTBEAT": "10s", "SSE_READ_BLOCK": "30s"},
+		"a read block of zero":                {"SSE_READ_BLOCK": "0s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolate(t)
+			t.Setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := LoadEvents(); err == nil {
+				t.Errorf("LoadEvents accepted %v", env)
+			}
+		})
 	}
 }
 

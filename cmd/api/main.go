@@ -18,6 +18,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/api"
 	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/embed"
+	"github.com/wpan36/incident_diag/internal/events"
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/log"
 	"github.com/wpan36/incident_diag/internal/mq"
@@ -53,8 +54,11 @@ func run() error {
 	// row, so a run stays interpretable after the configuration changes.
 	agentCfg, agentErr := config.LoadAgent()
 	llmCfg, llmErr := config.LoadLLM()
+	// The API reads the run event streams the agent worker writes, which is
+	// GET /api/runs/{id}/events.
+	eventsCfg, eventsErr := config.LoadEvents()
 	if err := errors.Join(cfgErr, dbErr, httpErr, docErr, kafkaErr, embedErr, searchErr,
-		agentErr, llmErr); err != nil {
+		agentErr, llmErr, eventsErr); err != nil {
 		return err
 	}
 
@@ -62,7 +66,7 @@ func run() error {
 	logger.Info("starting api", "config", cfg.String(), "database", dbCfg.String(),
 		"http", httpCfg.String(), "documents", docCfg.String(), "kafka", kafkaCfg.String(),
 		"embedding", embedCfg.String(), "search", searchCfg.String(),
-		"agent", agentCfg.String(), "llm", llmCfg.String())
+		"agent", agentCfg.String(), "llm", llmCfg.String(), "events", eventsCfg.String())
 
 	// Signals become a cancelled context before anything is opened, so a
 	// Ctrl-C during startup is honoured rather than queued.
@@ -110,6 +114,15 @@ func run() error {
 		return err
 	}
 
+	// Nothing is dialled: go-redis connects lazily, and /readyz does not gain a
+	// Redis check. A Redis that is down costs a live timeline, not the API, and
+	// a brief dependency outage should not get this process restarted.
+	eventReader, err := events.New(eventsCfg, logger)
+	if err != nil {
+		return err
+	}
+	closers.Add("redis", func(context.Context) error { return eventReader.Close() })
+
 	// gin's debug mode writes its own startup banner and per-route lines, which
 	// would be the only unstructured output this process produces.
 	gin.SetMode(gin.ReleaseMode)
@@ -117,14 +130,16 @@ func run() error {
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: api.NewServer(api.Deps{
-			Store:    st,
-			Files:    fs,
-			Producer: producer,
-			Embedder: embedder,
-			Search:   searcher,
-			Agent:    agentCfg,
-			LLMModel: llmCfg.Model,
-			Logger:   logger,
+			Store:       st,
+			Files:       fs,
+			Producer:    producer,
+			Embedder:    embedder,
+			Search:      searcher,
+			EventReader: eventReader,
+			Agent:       agentCfg,
+			Events:      eventsCfg,
+			LLMModel:    llmCfg.Model,
+			Logger:      logger,
 		}).Router(),
 		ReadHeaderTimeout: httpCfg.ReadHeaderTimeout,
 		ReadTimeout:       httpCfg.ReadTimeout,

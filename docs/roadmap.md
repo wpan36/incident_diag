@@ -92,8 +92,8 @@ Specified by S6, which is written at the top of Phase C.
 
 | | Milestone | Status |
 | --- | --- | --- |
-| **S9** | **Spec: `sse-streaming`** — reconnection semantics and goroutine lifecycle | todo |
-| M26 | SSE endpoint reading the run's Redis Stream; `Last-Event-ID` reconnection; explicit goroutine leak tests. M27's `answer.delta` was cancelled — [ADR 0010](adr/0010-no-answer-delta.md) | todo |
+| **S9** | **Spec: `sse-streaming`** — reconnection semantics and goroutine lifecycle | **done** |
+| M26 | SSE endpoint reading the run's Redis Stream; `Last-Event-ID` reconnection; explicit goroutine leak tests. M27's `answer.delta` was cancelled — [ADR 0010](adr/0010-no-answer-delta.md) | **done** |
 | M28 | Minimal front end (Tier B): a single static HTML page with vanilla JS and the browser's native `EventSource` — upload, incident creation, run start, live timeline, final diagnosis with references. No build step | todo |
 
 *Phase close:* `mean-review`, `CLAUDE.md`.

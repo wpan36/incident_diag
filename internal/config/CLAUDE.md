@@ -23,7 +23,8 @@ anything partly valid. The environment is the only source: Compose supplies `.en
   budget) and `LoadEmbedding`.
 - `search.go` — `Search` (Elasticsearch URL, index alias, per-query timeout), `LoadSearch`
   and `DefaultIndexAlias`.
-- `events.go` — `Events` (Redis URL, publish timeout, stream cap and TTL) and `LoadEvents`.
+- `events.go` — `Events` (Redis URL, publish timeout, stream cap and TTL, plus the SSE
+  heartbeat and read block) and `LoadEvents`.
 - `agentworker.go` — `AgentWorker` (run lease, attempt limit, tool server and its timeout,
   plus the derived worst case and rebalance timeout), `LoadAgentWorker`,
   `worstCaseRunDuration` and `RebalanceMargin`.
@@ -90,9 +91,16 @@ timeouts.
   variable for the same reason inverted: nothing would tie one to `EMBED_TIMEOUT` or
   `EMBED_MAX_RETRIES`, so it would go stale, and a stale figure means the rebalance
   evicting a worker mid-run.
-- **`LoadEvents` is separate from `LoadAgentWorker`** although M24 only had one consumer:
-  `cmd/api` needs the same Redis for SSE in M26, and loading is split by concern, not by
-  binary. It is not in `Load` either, or `migrate` and `ops-mcp` would need a Redis.
+- **`LoadEvents` is separate from `LoadAgentWorker`** because two binaries need it: the
+  agent worker writes these streams and `cmd/api` reads them for SSE. Loading is split by
+  concern, not by binary. It is not in `Load` either, or `migrate` and `ops-mcp` would need
+  a Redis. `cmd/agent-worker` loads `SSE_HEARTBEAT` and `SSE_READ_BLOCK` and ignores them; a
+  fifteenth loader for two values one binary reads is the more expensive answer.
+- **`LoadEvents` is the fourth loader checking a relationship between its own values.**
+  `SSE_HEARTBEAT` has a five-second floor because the SSE write deadline is twice it — a
+  one-second heartbeat would give a two-second deadline and cut a slow client mid-frame —
+  and `SSE_READ_BLOCK` must be below it, because the heartbeat is only checked between two
+  blocking reads.
 - **`SEARCH_TIMEOUT` is on `Search` and applies to `Search` alone.** The bulk index and the
   delete-by-document belong to ingestion and are bounded by `INGEST_DOCUMENT_TIMEOUT`,
   which a ten-second cap would break.

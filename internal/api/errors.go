@@ -53,11 +53,30 @@ func tooLarge(format string, args ...any) error {
 	return httpx.InvalidErr(errTooLarge, format, args...)
 }
 
+// errStreamGone marks a request for a run's event stream that no longer
+// exists: the run is terminal, so there is nothing left to follow.
+//
+// It follows errTooLarge's pattern — a sentinel that moves the status off the
+// one httpx.Kind would derive, with the exception stated once in renderError
+// rather than as a sixth kind. The kind stays KindNotFound, because the stream
+// genuinely is not there, so the body's code is not_found and the status is
+// what separates "this run is over" from "no such run".
+var errStreamGone = errors.New("the run's event stream is gone")
+
+// streamGone builds the client-facing error for a run that has already
+// finished.
+func streamGone(runID string) error {
+	return httpx.NotFoundErr(errStreamGone, "the event stream for run %s is closed", runID)
+}
+
 // renderError writes the error envelope, deriving the status from the error.
 func renderError(c *gin.Context, err error) {
 	status := httpx.StatusFor(err)
 	if errors.Is(err, errTooLarge) {
 		status = http.StatusRequestEntityTooLarge
+	}
+	if errors.Is(err, errStreamGone) {
+		status = http.StatusGone
 	}
 	// Attach the error for the logging middleware. The client sees
 	// httpx.Message; the cause, with everything internal still in it, goes to

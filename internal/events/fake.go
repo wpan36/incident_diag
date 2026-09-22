@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // FakePublisher records what would have been published.
@@ -81,4 +82,86 @@ func (f *FakePublisher) Reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.published, f.trims = nil, nil
+}
+
+// FakeReader is a Reader backed by a slice, so internal/api's tests need no
+// Redis and still run in milliseconds.
+//
+// It ships beside FakePublisher and for the same reason: the code that most
+// needs testing without Redis lives in another package.
+//
+// It is safe for concurrent use, because a test appends to it from one
+// goroutine while the handler under test reads from another.
+type FakeReader struct {
+	mu     sync.Mutex
+	events []ReadEvent
+
+	// Err, when set, is returned by every Replay and every Follow. It is how a
+	// test says "Redis failed mid-stream".
+	Err error
+
+	// Block is how long Follow waits before reporting that nothing arrived.
+	// It stands in for SSE_READ_BLOCK, and a test sets it to a few
+	// milliseconds so an idle round is not an idle second.
+	Block time.Duration
+}
+
+// Add appends an event, as a publisher would.
+func (f *FakeReader) Add(evs ...ReadEvent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, evs...)
+}
+
+// Replay implements Reader.
+func (f *FakeReader) Replay(_ context.Context, _, after string, fn func(ReadEvent) error) error {
+	if f.Err != nil {
+		return f.Err
+	}
+	return deliverFake(f.since(after), fn)
+}
+
+// Follow implements Reader.
+//
+// It returns immediately when something is already waiting, and otherwise
+// sleeps out its block — which is what XREAD BLOCK does, and what makes the
+// handler's "an event is its own keepalive" branch reachable in a test.
+func (f *FakeReader) Follow(ctx context.Context, _, after string, fn func(ReadEvent) error) error {
+	if f.Err != nil {
+		return f.Err
+	}
+	pending := f.since(after)
+	if len(pending) == 0 {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(f.Block):
+		}
+		pending = f.since(after)
+	}
+	return deliverFake(pending, fn)
+}
+
+// since returns the events after `after`, comparing ids as strings — which is
+// correct for the fixed-width ids these tests use and is not what Redis does.
+func (f *FakeReader) since(after string) []ReadEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]ReadEvent, 0, len(f.events))
+	for _, e := range f.events {
+		if after == "" || e.ID > after {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func deliverFake(evs []ReadEvent, fn func(ReadEvent) error) error {
+	for _, e := range evs {
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return nil
 }

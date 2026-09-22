@@ -31,7 +31,20 @@ type Events struct {
 	// StreamTTL is how long a run's stream outlives its last event. It is
 	// refreshed on every publish.
 	StreamTTL time.Duration
+
+	// Heartbeat is how long the SSE endpoint may write nothing before it sends
+	// a comment frame, which keeps an idle connection from being closed by a
+	// proxy. The write deadline is derived from it — now + 2 × Heartbeat —
+	// because the gap between two writes is bounded by exactly this value.
+	Heartbeat time.Duration
+
+	// ReadBlock is how long one XREAD BLOCK waits. It has to stay well below
+	// Heartbeat, since the heartbeat is only checked between blocks.
+	ReadBlock time.Duration
 }
+
+// minHeartbeat is the floor on SSE_HEARTBEAT. See the check that uses it.
+const minHeartbeat = 5 * time.Second
 
 // LoadEvents reads the event bus configuration from the environment,
 // reporting every problem it finds at once.
@@ -43,6 +56,8 @@ func LoadEvents() (Events, error) {
 		PublishTimeout: e.optionalDuration("REDIS_PUBLISH_TIMEOUT", 2*time.Second),
 		StreamMaxLen:   e.optionalInt("EVENT_STREAM_MAXLEN", 1000),
 		StreamTTL:      e.optionalDuration("EVENT_STREAM_TTL", 24*time.Hour),
+		Heartbeat:      e.optionalDuration("SSE_HEARTBEAT", 20*time.Second),
+		ReadBlock:      e.optionalDuration("SSE_READ_BLOCK", 5*time.Second),
 	}
 
 	if c.PublishTimeout <= 0 {
@@ -53,6 +68,19 @@ func LoadEvents() (Events, error) {
 	}
 	if c.StreamTTL <= 0 {
 		e.fail("EVENT_STREAM_TTL must be greater than zero")
+	}
+	// The floor is there because the SSE write deadline is 2 × Heartbeat: a
+	// one-second heartbeat would give a two-second deadline, and a slow client
+	// would be cut mid-frame.
+	if c.Heartbeat < minHeartbeat {
+		e.fail("SSE_HEARTBEAT must be at least %s, got %s", minHeartbeat, c.Heartbeat)
+	}
+	// The heartbeat is only checked between two blocking reads, so a read
+	// block at or above it would let the connection go silent for longer than
+	// the heartbeat promises.
+	if c.ReadBlock <= 0 || c.ReadBlock >= c.Heartbeat {
+		e.fail("SSE_READ_BLOCK must be greater than zero and less than SSE_HEARTBEAT (%s), got %s",
+			c.Heartbeat, c.ReadBlock)
 	}
 
 	if err := e.err(); err != nil {
@@ -67,6 +95,7 @@ func LoadEvents() (Events, error) {
 // never reaches an error message either, because redis.ParseURL reports what
 // is wrong with a connection string without quoting it.
 func (c Events) String() string {
-	return fmt.Sprintf("redis=<redacted> publish_timeout=%s stream_maxlen=%d stream_ttl=%s",
-		c.PublishTimeout, c.StreamMaxLen, c.StreamTTL)
+	return fmt.Sprintf("redis=<redacted> publish_timeout=%s stream_maxlen=%d stream_ttl=%s "+
+		"sse_heartbeat=%s sse_read_block=%s",
+		c.PublishTimeout, c.StreamMaxLen, c.StreamTTL, c.Heartbeat, c.ReadBlock)
 }

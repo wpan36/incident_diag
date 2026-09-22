@@ -26,16 +26,18 @@ instead of something each handler must remember.
   types, `enqueueIngestion`, plus list and get.
 - `runs.go` — `POST /api/incidents/:id/runs`, `GET /api/runs/:id`,
   `GET /api/incidents/:id/runs`, plus `enqueueRun` and `newRunList`.
+- `sse.go` — `GET /api/runs/:id/events`: the replay-then-follow loop, the frame writer,
+  `Last-Event-ID` parsing, the write-deadline extension and the flush.
 - `search.go` — `GET /api/search`: parameter validation, then embed the query and retrieve.
-- `api_test.go`, `documents_test.go`, `search_test.go` — unit tests against the router with
-  fakes.
+- `api_test.go`, `documents_test.go`, `search_test.go`, `sse_test.go` — unit tests against
+  the router with fakes.
 - `integration_test.go`, `runs_integration_test.go` — `//go:build integration`. Real MySQL
   and a real directory.
 
 ## How it fits in
 
 The top of the `internal/` graph: it depends on `store`, `files`, `mq`, `embed`, `search`,
-`wire`, `config`, `httpx`, `id` and
+`events`, `wire`, `config`, `httpx`, `id` and
 `log`, and nothing depends on it except `cmd/api`. It is where `httpx` kinds become status codes
 and where stored types become wire types.
 
@@ -46,7 +48,10 @@ and where stored types become wire types.
   still produces a request record. `gin.New`, not `gin.Default` — the default engine
   installs gin's own logger and recovery, which would write a second, differently shaped
   line per request and answer a panic with an unparseable body.
-- **413 is the one status not derived from an `httpx` kind.** An oversize file, multipart
+- **413 and 410 are the two statuses not derived from an `httpx` kind.** Both are sentinels
+  (`errTooLarge`, `errStreamGone`) that `renderError` maps, so each exception is stated once
+  rather than letting handlers pass their own status.
+- **413 is the first of them.** An oversize file, multipart
   envelope or JSON body is `KindInvalid`, which would render 400. The `errTooLarge` sentinel
   keeps that exception stated once in `renderError`, rather than letting each handler pass
   its own status — a handler that forgets answers 400 to a request it never read, which is a
@@ -90,6 +95,40 @@ and where stored types become wire types.
 - **A failed produce does not fail a run start either**, for the reason the upload has:
   the run was created, so 500 would be a lie, and a client retrying on it would hit 409
   from its own first attempt. The row is `PENDING`, which the run reconciler sweeps for.
+- **A terminal run's event stream is 410, never a replay.** `EventSource` reconnects about
+  three seconds after the server closes a stream, so replaying a finished run and closing
+  would loop for ever and nothing on the server could break it; a non-200 makes the browser
+  give up. One rule covers three cases — the run finished before the client subscribed, the
+  stream expired, and `run.finished` was never published. Its cost is a race: a run that
+  finishes between the client's `GET /api/runs/{id}` and its subscribe answers 410 and the
+  client re-fetches. The front end must therefore render the timeline from the fetch and
+  treat events as updates to it, not as its only source.
+- **The SSE handler owns no goroutine.** It blocks in `events.Reader.Follow` itself, so the
+  request is the one thing to cancel and `r.Context()` is the one way to stop it. A writer
+  goroutine fed by a channel is the usual SSE shape and would exist here only to be leaked.
+- **Every SSE write extends the write deadline and flushes.** `cmd/api` sets
+  `HTTP_WRITE_TIMEOUT` and a run outlasts it, so without the extension the server would cut
+  its own stream; without the flush gin buffers the response until the handler returns,
+  which is the failure this endpoint exists to prevent. The deadline is
+  `now + 2 × SSE_HEARTBEAT` — the gap between two writes is bounded by the heartbeat, so
+  twice it states the invariant. It is extended per write rather than cleared once, because
+  a client that stopped reading would then block the handler in `Write` for ever.
+  `http.NewResponseController` reaches the real writer because gin v1.12.0's own writer
+  implements `Unwrap()`, which is a version assumption.
+- **The heartbeat is a timestamp, not a ticker.** The handler is blocked in `XREAD` most of
+  the time, and a ticker would fire the instant it returned. Comparing against the last byte
+  written is exact, and a busy run sends no pings at all.
+- **The terminal re-read runs on every idle round**, one `GetRun` per client per
+  `SSE_READ_BLOCK`. It is the price of "a failed publish is logged and ignored": the stream
+  cannot be trusted to announce the end, so MySQL is asked. A failed re-read is logged and
+  treated as "not yet", for the reason `/readyz` does not restart the process over a blip.
+- **A Redis failure mid-stream closes the stream and logs.** The headers are already sent,
+  so there is no status left, and there is no synthetic error event either: the vocabulary
+  is S8's three names and a fourth would have to be rendered by a front end that has a
+  better source for the same fact.
+- **`Server.runs` exists for the SSE tests.** Every handler reads `Deps.Store` directly,
+  including this one in production; the field is an interface only so the unit tests can
+  drive the 410 and the terminal re-read without a MySQL to put a run in.
 - **`GET /api/runs/{id}` is not paginated.** `max_steps` bounds the step count at single
   digits and a partial timeline is not useful. That makes it the second design to depend
   quietly on that invariant, after S7's context builder.
