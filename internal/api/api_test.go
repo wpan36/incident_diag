@@ -411,3 +411,24 @@ func TestFilenameLengthCountsCharacters(t *testing.T) {
 		t.Error("a filename one character over the limit was accepted")
 	}
 }
+
+func TestTheFrontEndIsServedAtTheRoot(t *testing.T) {
+	h := testRouter(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("content-type = %q", ct)
+	}
+	body := rec.Body.String()
+	// Embedded, so an empty or missing file is a build failure rather than a
+	// page that serves nothing. This asserts the wiring, not the markup.
+	for _, want := range []string{"<!doctype html>", "EventSource", "/api/runs/"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the served page is missing %q", want)
+		}
+	}
+}

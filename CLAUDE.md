@@ -82,7 +82,7 @@ propose a commit message. Commits are made by the user, not automatically.
 cmd/         api, migrate, ingestion-worker, agent-worker, ops-mcp, lab-scenario, and the Incident Lab services
 internal/    the packages those binaries are built from
 migrations/  numbered SQL schema migrations, embedded into the binaries that apply them
-web/         single static HTML page, no build step
+web/         single static HTML page, embedded and served by cmd/api
 deploy/      docker compose, Prometheus config, Grafana dashboards
 testdata/    knowledge corpus and the RAG evaluation set
 docs/        workflow, roadmap, architecture, ADRs, feature specs

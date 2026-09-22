@@ -1,0 +1,461 @@
+<!doctype html>
+<!--
+  The whole front end. One file, no build step, no dependencies (ADR 0007).
+
+  Two things here are load-bearing rather than stylistic:
+
+  - The timeline is fetched from GET /api/runs/{id} and then *updated* by
+    events. A run that fails in its first seconds is terminal before this page
+    can subscribe, and the events endpoint answers 410 with nothing to replay.
+  - Server text goes in through textContent. The corpus is uploaded by whoever
+    is using this and tool output comes from the operational world; neither is
+    trusted markup.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>incident_diag</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1c1e; --muted: #5f6672; --line: #e3e6ea;
+    --panel: #f7f8fa; --accent: #2f6fdb; --ok: #1e7a45; --warn: #9a6400;
+    --err: #b3261e; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e6e8eb; --muted: #969da8; --line: #2a2e35;
+      --panel: #1b1e24; --accent: #6ea8fe; --ok: #5bcf8e; --warn: #e0b341;
+      --err: #f2857c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 32px 0 10px; text-transform: uppercase;
+       letter-spacing: .06em; color: var(--muted); }
+  .sub { color: var(--muted); margin: 0 0 8px; }
+  section { border-top: 1px solid var(--line); }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; }
+  input, select, textarea, button {
+    font: inherit; color: inherit; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+  }
+  textarea { width: 100%; min-height: 64px; resize: vertical; }
+  button { background: var(--accent); color: #fff; border-color: transparent; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: var(--panel); color: var(--fg); border-color: var(--line); }
+  .row { display: flex; gap: 10px; align-items: baseline; padding: 7px 0;
+         border-bottom: 1px solid var(--line); }
+  .row.click { cursor: pointer; }
+  .row.click:hover, .row.on { background: var(--panel); }
+  .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .tag { font: 12px/1 var(--mono); padding: 3px 6px; border-radius: 4px;
+         background: var(--panel); color: var(--muted); white-space: nowrap; }
+  .tag.ok { color: var(--ok); } .tag.warn { color: var(--warn); } .tag.err { color: var(--err); }
+  .step { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+  .step h3 { margin: 0 0 6px; font-size: 14px; display: flex; gap: 8px; align-items: baseline; }
+  pre { font: 12.5px/1.5 var(--mono); background: var(--panel); border-radius: 6px;
+        padding: 9px 11px; margin: 6px 0 0; overflow-x: auto; white-space: pre-wrap;
+        overflow-wrap: anywhere; max-height: 280px; }
+  .note { color: var(--muted); font-size: 13px; }
+  .err-box { color: var(--err); font-size: 13px; min-height: 18px; margin: 0 0 8px; }
+  ul { margin: 6px 0 0; padding-left: 20px; } li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>incident_diag</h1>
+  <p class="sub">Upload knowledge, file an incident, watch a bounded agent investigate it.</p>
+  <p class="err-box" id="err"></p>
+
+  <section>
+    <h2>Knowledge</h2>
+    <form id="upload">
+      <input type="file" name="file" accept=".md,.txt" required>
+      <select name="document_type">
+        <option value="runbook">runbook</option>
+        <option value="postmortem">postmortem</option>
+        <option value="service_doc">service_doc</option>
+      </select>
+      <input name="service" placeholder="service (optional)" pattern="[a-z0-9][a-z0-9-]*">
+      <button>Upload</button>
+    </form>
+    <div id="docs"></div>
+  </section>
+
+  <section>
+    <h2>Incidents</h2>
+    <form id="file-incident">
+      <input name="title" placeholder="payment-service latency spike" required style="flex:1">
+      <input name="service" placeholder="service (optional)" pattern="[a-z0-9][a-z0-9-]*">
+      <textarea name="description" placeholder="What was observed?" required></textarea>
+      <button>File incident</button>
+    </form>
+    <div id="incidents"></div>
+  </section>
+
+  <section id="runs-section" hidden>
+    <h2>Runs</h2>
+    <form id="start-run">
+      <button id="start-btn">Start investigation</button>
+      <span class="note" id="run-note"></span>
+    </form>
+    <div id="runs"></div>
+  </section>
+
+  <section id="timeline-section" hidden>
+    <h2>Investigation</h2>
+    <div id="run-head"></div>
+    <div id="diagnosis"></div>
+    <div id="steps"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  return n;
+};
+
+const state = {
+  incidentID: null,   // the selected incident
+  runID: null,        // the run being shown
+  steps: new Map(),   // step_number -> Step, for the current attempt only
+  source: null,       // the open EventSource
+  docPoll: null,
+};
+
+function showError(e) {
+  // The API's envelope is {error:{code,message,request_id}}; quoting the
+  // request id is what makes a report actionable against the logs.
+  const msg = e && e.body && e.body.error
+    ? `${e.body.error.message} (${e.body.error.code}, request ${e.body.error.request_id})`
+    : String(e && e.message ? e.message : e);
+  $("err").textContent = msg;
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (res.status === 204) return null;
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error(`${opts && opts.method || "GET"} ${path} -> ${res.status}`);
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
+  return body;
+}
+
+const fmtTime = (s) => (s ? new Date(s).toLocaleTimeString() : "");
+const statusClass = (s) =>
+  ({ READY: "ok", SUCCEEDED: "ok", OK: "ok", PENDING: "", PROCESSING: "warn",
+     RUNNING: "warn", REFUSED: "warn", TIMEOUT: "warn", FAILED: "err", ERROR: "err" })[s] || "";
+
+// ---- documents -----------------------------------------------------------
+
+async function loadDocuments() {
+  const page = await api("/api/documents?limit=50");
+  const box = $("docs");
+  box.replaceChildren();
+  if (!page.items.length) {
+    box.append(el("p", "note", "Nothing uploaded yet."));
+    return;
+  }
+  let pending = false;
+  for (const d of page.items) {
+    if (d.status === "PENDING" || d.status === "PROCESSING") pending = true;
+    const row = el("div", "row");
+    row.append(el("span", "grow", d.filename));
+    row.append(el("span", "tag", d.service || "—"));
+    row.append(el("span", "tag", d.document_type));
+    row.append(el("span", "tag " + statusClass(d.status),
+      d.status === "READY" ? `${d.status} · ${d.chunk_count} chunks` : d.status));
+    if (d.failure_reason) row.append(el("span", "note", d.failure_reason));
+    box.append(row);
+  }
+  // Poll only while something can still change. Ingestion has no event
+  // stream and does not need one for a list that moves twice a minute.
+  clearTimeout(state.docPoll);
+  if (pending) state.docPoll = setTimeout(() => loadDocuments().catch(showError), 3000);
+}
+
+$("upload").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("err").textContent = "";
+  const form = ev.target;
+  const data = new FormData(form);
+  if (!data.get("service")) data.delete("service");
+  try {
+    await api("/api/documents", { method: "POST", body: data });
+    form.reset();
+    await loadDocuments();
+  } catch (e) { showError(e); }
+});
+
+// ---- incidents -----------------------------------------------------------
+
+async function loadIncidents() {
+  const page = await api("/api/incidents?limit=50");
+  const box = $("incidents");
+  box.replaceChildren();
+  if (!page.items.length) {
+    box.append(el("p", "note", "No incidents yet."));
+    return;
+  }
+  for (const inc of page.items) {
+    const row = el("div", "row click" + (inc.id === state.incidentID ? " on" : ""));
+    row.append(el("span", "grow", inc.title));
+    row.append(el("span", "tag", inc.service || "—"));
+    row.append(el("span", "tag", fmtTime(inc.created_at)));
+    row.addEventListener("click", () => selectIncident(inc.id).catch(showError));
+    box.append(row);
+  }
+}
+
+$("file-incident").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("err").textContent = "";
+  const form = ev.target;
+  const body = Object.fromEntries(new FormData(form));
+  if (!body.service) delete body.service;
+  try {
+    const inc = await api("/api/incidents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    form.reset();
+    await loadIncidents();
+    await selectIncident(inc.id);
+  } catch (e) { showError(e); }
+});
+
+// ---- runs ----------------------------------------------------------------
+
+async function selectIncident(id) {
+  state.incidentID = id;
+  $("runs-section").hidden = false;
+  await loadIncidents();
+  await loadRuns();
+}
+
+async function loadRuns() {
+  const page = await api(`/api/incidents/${state.incidentID}/runs?limit=20`);
+  const box = $("runs");
+  box.replaceChildren();
+  const active = page.items.some((r) => r.status === "PENDING" || r.status === "RUNNING");
+  $("start-btn").disabled = active;
+  $("run-note").textContent = active ? "An investigation is already in flight." : "";
+
+  if (!page.items.length) box.append(el("p", "note", "No investigations yet."));
+  for (const r of page.items) {
+    const row = el("div", "row click" + (r.id === state.runID ? " on" : ""));
+    row.append(el("span", "grow", fmtTime(r.created_at)));
+    row.append(el("span", "tag", `${r.step_count} steps`));
+    if (r.stop_reason) row.append(el("span", "tag", r.stop_reason));
+    row.append(el("span", "tag " + statusClass(r.status), r.status));
+    row.addEventListener("click", () => openRun(r.id).catch(showError));
+    box.append(row);
+  }
+  // Show the newest run without being asked; it is what anyone wants next.
+  if (!state.runID && page.items.length) await openRun(page.items[0].id);
+}
+
+$("start-run").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("err").textContent = "";
+  try {
+    const run = await api(`/api/incidents/${state.incidentID}/runs`, { method: "POST" });
+    state.runID = null;
+    await loadRuns();
+    await openRun(run.id);
+  } catch (e) { showError(e); }
+});
+
+// ---- the timeline --------------------------------------------------------
+
+async function openRun(id) {
+  closeStream();
+  state.runID = id;
+  state.steps.clear();
+  $("timeline-section").hidden = false;
+
+  // Fetch first, subscribe second. A run that failed in its first seconds is
+  // already terminal, and the events endpoint answers 410 with nothing to
+  // replay — so events are an update to this, never the only source.
+  const detail = await api(`/api/runs/${id}`);
+  for (const s of detail.steps || []) state.steps.set(s.step_number, s);
+  renderRun(detail);
+  renderSteps();
+  await loadRuns();
+
+  if (detail.status === "PENDING" || detail.status === "RUNNING") subscribe(id);
+}
+
+function subscribe(id) {
+  const src = new EventSource(`/api/runs/${id}/events`);
+  state.source = src;
+
+  src.addEventListener("run.started", (m) => {
+    // A restarted run re-uses step numbers 1..n, so this clears rather than
+    // merges (ADR 0009).
+    state.steps.clear();
+    renderRun(JSON.parse(m.data));
+    renderSteps();
+  });
+
+  src.addEventListener("step.completed", (m) => {
+    const step = JSON.parse(m.data);
+    state.steps.set(step.step_number, step);
+    renderSteps();
+  });
+
+  src.addEventListener("run.finished", (m) => {
+    renderRun(JSON.parse(m.data));
+    closeStream();
+    loadRuns().catch(showError);
+  });
+
+  src.onerror = () => {
+    // No reconnection. A closed stream means the run is over — the endpoint
+    // answers 410 for a terminal run precisely so this does not loop — so
+    // re-read once and stop.
+    if (src.readyState !== EventSource.CLOSED) return;
+    closeStream();
+    api(`/api/runs/${id}`).then((d) => {
+      state.steps.clear();
+      for (const s of d.steps || []) state.steps.set(s.step_number, s);
+      renderRun(d);
+      renderSteps();
+      return loadRuns();
+    }).catch(showError);
+  };
+}
+
+function closeStream() {
+  if (state.source) { state.source.close(); state.source = null; }
+}
+
+function renderRun(run) {
+  const box = $("run-head");
+  box.replaceChildren();
+  const head = el("div", "row");
+  head.append(el("span", "tag " + statusClass(run.status), run.status));
+  if (run.stop_reason) head.append(el("span", "tag", run.stop_reason));
+  head.append(el("span", "tag", `${run.step_count}/${run.max_steps} steps`));
+  head.append(el("span", "tag", `${run.tool_call_count}/${run.max_tool_calls} tool calls`));
+  head.append(el("span", "tag", `${run.prompt_tokens + run.completion_tokens} tokens`));
+  head.append(el("span", "grow", ""));
+  head.append(el("span", "tag", run.model));
+  box.append(head);
+  if (run.error) box.append(el("p", "err-box", run.error));
+
+  renderDiagnosis(run.final_result);
+}
+
+function renderDiagnosis(result) {
+  const box = $("diagnosis");
+  box.replaceChildren();
+  if (!result) return;
+
+  const d = asObject(result);
+  if (!d) { box.append(el("pre", null, String(result))); return; }
+
+  const card = el("div", "step");
+  card.append(el("h3", null, "Diagnosis"));
+  if (d.affected_service) card.append(el("p", "note", `Affected: ${d.affected_service}`));
+  if (d.root_cause) card.append(el("p", null, d.root_cause));
+
+  if (Array.isArray(d.next_actions) && d.next_actions.length) {
+    card.append(el("h3", null, "Next actions"));
+    const ul = el("ul");
+    for (const a of d.next_actions) ul.append(el("li", null, a));
+    card.append(ul);
+  }
+  if (Array.isArray(d.evidence) && d.evidence.length) {
+    card.append(el("h3", null, "Evidence"));
+    const ul = el("ul");
+    for (const e of d.evidence) {
+      const li = el("li");
+      li.append(el("span", "tag", `step ${e.step}`));
+      li.append(document.createTextNode(" " + (e.note || "")));
+      ul.append(li);
+    }
+    card.append(ul);
+  }
+  box.append(card);
+}
+
+function renderSteps() {
+  const box = $("steps");
+  box.replaceChildren();
+  const numbers = [...state.steps.keys()].sort((a, b) => a - b);
+  if (!numbers.length) {
+    box.append(el("p", "note", "Waiting for the first step…"));
+    return;
+  }
+  for (const n of numbers) box.append(renderStep(state.steps.get(n)));
+}
+
+function renderStep(s) {
+  const card = el("div", "step");
+  const head = el("h3");
+  head.append(el("span", "tag", `step ${s.step_number}`));
+  head.append(el("span", "grow", describeAction(s)));
+  head.append(el("span", "tag", `${s.duration_ms} ms`));
+  if (s.status !== "OK") head.append(el("span", "tag " + statusClass(s.status), s.status));
+  if (s.tool_call && s.tool_call.status !== "OK") {
+    head.append(el("span", "tag " + statusClass(s.tool_call.status), s.tool_call.status));
+  }
+  card.append(head);
+
+  if (s.error) card.append(el("p", "err-box", s.error));
+  if (s.observation_summary) {
+    card.append(el("pre", null, s.observation_summary));
+    if (s.truncated) card.append(el("p", "note", `truncated from ${s.observation_bytes} bytes`));
+  }
+  return card;
+}
+
+// describeAction reads the tool name out of the stored action, which is the
+// model's tool call as it made it.
+//
+// action and final_result are json.RawMessage on the wire, so they arrive as
+// JSON *values*, not as strings holding JSON. Calling JSON.parse on the object
+// throws, and the catch would silently show "tool_call" for every step — which
+// is what it did until a smoke test printed the timeline.
+function describeAction(s) {
+  if (s.action_type === "none") return "no usable action";
+  const a = asObject(s.action);
+  if (!a || !a.tool) return s.action_type;
+  const args = a.arguments ? JSON.stringify(a.arguments) : "";
+  return args ? `${a.tool} ${args}` : String(a.tool);
+}
+
+// asObject accepts either shape, so a change in how the API renders a raw
+// message cannot silently empty the page.
+function asObject(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "object") return v;
+  try { return JSON.parse(String(v)); } catch { return null; }
+}
+
+// ---- start ---------------------------------------------------------------
+
+addEventListener("beforeunload", closeStream);
+loadDocuments().catch(showError);
+loadIncidents().catch(showError);
+</script>
+</body>
+</html>

@@ -25,6 +25,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/mq"
 	"github.com/wpan36/incident_diag/internal/search"
 	"github.com/wpan36/incident_diag/internal/store"
+	"github.com/wpan36/incident_diag/web"
 )
 
 // readinessTimeout bounds the database check behind /readyz.
@@ -110,6 +111,13 @@ func (s *Server) Router() http.Handler {
 	})
 	r.NoMethod(func(c *gin.Context) {
 		renderError(c, httpx.NotFound("no such endpoint"))
+	})
+
+	// The front end, on the API's own origin so that nothing here needs CORS.
+	// A fixed page rather than a directory: one file is the whole of it, and
+	// serving a directory would invite a path to get wrong.
+	r.GET("/", func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", web.Page)
 	})
 
 	r.GET("/healthz", s.healthz)
