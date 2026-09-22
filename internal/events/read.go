@@ -39,6 +39,12 @@ type ReadEvent struct {
 // unchanged, which is how the handler ends a request from inside a frame
 // write.
 //
+// Both also return the id of the last entry they read, which is the caller's
+// next `after`. It is a return value rather than something the caller takes
+// from the last ReadEvent it was handed, because a malformed entry is read and
+// skipped: a caller that tracked only what it was yielded would ask for the
+// same entry forever, and XREAD does not block while an entry is waiting.
+//
 // Cancellation is not an error. When ctx ends, both return nil — a client
 // disconnecting is this endpoint's normal ending, and making every caller
 // filter context.Canceled out of its logging is a trap.
@@ -46,11 +52,11 @@ type Reader interface {
 	// Replay yields every entry after `after`, oldest first, and returns when
 	// the stream's current end is reached. An empty `after` starts at the
 	// beginning.
-	Replay(ctx context.Context, runID, after string, fn func(ReadEvent) error) error
+	Replay(ctx context.Context, runID, after string, fn func(ReadEvent) error) (string, error)
 
 	// Follow blocks for at most ReadBlock and yields whatever arrived,
 	// returning nil having yielded nothing when the block expires.
-	Follow(ctx context.Context, runID, after string, fn func(ReadEvent) error) error
+	Follow(ctx context.Context, runID, after string, fn func(ReadEvent) error) (string, error)
 }
 
 // Replay implements Reader.
@@ -58,7 +64,7 @@ type Reader interface {
 // The range is exclusive of `after` — XRANGE key (<id> +, Redis 6.2 and later
 // — so a reconnecting client is never sent an event twice and no sequence
 // number is incremented by hand.
-func (c *Client) Replay(ctx context.Context, runID, after string, fn func(ReadEvent) error) error {
+func (c *Client) Replay(ctx context.Context, runID, after string, fn func(ReadEvent) error) (string, error) {
 	start := "-"
 	if after != "" {
 		start = "(" + after
@@ -70,9 +76,9 @@ func (c *Client) Replay(ctx context.Context, runID, after string, fn func(ReadEv
 	msgs, err := c.rdb.XRange(readCtx, StreamKey(runID), start, "+").Result()
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("events: replay the stream of run %s: %w", runID, err)
+		return "", fmt.Errorf("events: replay the stream of run %s: %w", runID, err)
 	}
 	return c.deliver(runID, msgs, fn)
 }
@@ -85,44 +91,56 @@ func (c *Client) Replay(ctx context.Context, runID, after string, fn func(ReadEv
 //
 // redis.Nil from a blocked XREAD is the block expiring, not a failure. It is
 // this call's normal idle result.
-func (c *Client) Follow(ctx context.Context, runID, after string, fn func(ReadEvent) error) error {
+func (c *Client) Follow(ctx context.Context, runID, after string, fn func(ReadEvent) error) (string, error) {
 	// Never $. An empty replay means the stream is empty, not that it is up to
 	// date, and $ would lose whatever was published between the two calls —
 	// the window S8 rejected it for.
-	last := after
-	if last == "" {
-		last = "0"
+	from := after
+	if from == "" {
+		from = "0"
 	}
 
 	readCtx, cancel := context.WithTimeout(ctx, c.cfg.ReadBlock+c.cfg.PublishTimeout)
 	defer cancel()
 
 	streams, err := c.rdb.XRead(readCtx, &redis.XReadArgs{
-		Streams: []string{StreamKey(runID), last},
+		Streams: []string{StreamKey(runID), from},
 		Block:   c.cfg.ReadBlock,
 	}).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) || ctx.Err() != nil {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("events: follow the stream of run %s: %w", runID, err)
+		return "", fmt.Errorf("events: follow the stream of run %s: %w", runID, err)
 	}
 
+	var last string
 	for _, s := range streams {
-		if err := c.deliver(runID, s.Messages, fn); err != nil {
-			return err
+		id, err := c.deliver(runID, s.Messages, fn)
+		if id != "" {
+			last = id
+		}
+		if err != nil {
+			return last, err
 		}
 	}
-	return nil
+	return last, nil
 }
 
-// deliver hands each entry to fn, stopping at the first error fn returns.
+// deliver hands each entry to fn, stopping at the first error fn returns, and
+// returns the id of the last entry it read.
 //
 // An entry missing either field is skipped rather than failing the stream:
 // only this package writes these entries, so one that does not parse is a bug
-// or a manual XADD, and neither is worth ending a client's timeline over.
-func (c *Client) deliver(runID string, msgs []redis.XMessage, fn func(ReadEvent) error) error {
+// or a manual XADD, and neither is worth ending a client's timeline over. It
+// still counts as read, because the returned id is the caller's next `after`
+// and a skipped entry that did not advance it would be re-read forever —
+// XREAD returns immediately while an entry is waiting, so the caller would
+// spin rather than block.
+func (c *Client) deliver(runID string, msgs []redis.XMessage, fn func(ReadEvent) error) (string, error) {
+	var last string
 	for _, m := range msgs {
+		last = m.ID
 		ev, ok := readEvent(m)
 		if !ok {
 			c.logger.Warn("skipping a malformed entry in a run's event stream",
@@ -130,10 +148,10 @@ func (c *Client) deliver(runID string, msgs []redis.XMessage, fn func(ReadEvent)
 			continue
 		}
 		if err := fn(ev); err != nil {
-			return err
+			return last, err
 		}
 	}
-	return nil
+	return last, nil
 }
 
 // readEvent converts one stream entry, reporting whether it had the fields

@@ -67,26 +67,36 @@ func (testError) Error() string { return "redis is down" }
 var errTest = testError{}
 
 func TestTheFakeReaderResumesAndBlocks(t *testing.T) {
-	f := &FakeReader{Block: 5 * time.Millisecond}
-	f.Add(ReadEvent{ID: "1-0", Name: RunStarted}, ReadEvent{ID: "2-0", Name: RunFinished})
+	f := &FakeReader{}
+	f.SetBlock(5 * time.Millisecond)
+	f.Add(ReadEvent{ID: "1-0", Name: RunStarted, Data: []byte(`{}`)},
+		ReadEvent{ID: "2-0", Name: RunFinished, Data: []byte(`{}`)})
 
-	names := func(after string, call func(func(ReadEvent) error) error) []string {
+	names := func(call func(func(ReadEvent) error) (string, error)) ([]string, string) {
 		t.Helper()
 		var got []string
-		if err := call(func(ev ReadEvent) error {
+		last, err := call(func(ev ReadEvent) error {
 			got = append(got, ev.Name)
 			return nil
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("reading: %v", err)
 		}
-		return got
+		return got, last
 	}
 
-	got := names("", func(fn func(ReadEvent) error) error { return f.Replay(t.Context(), "run-1", "", fn) })
+	got, last := names(func(fn func(ReadEvent) error) (string, error) {
+		return f.Replay(t.Context(), "run-1", "", fn)
+	})
 	if len(got) != 2 {
 		t.Errorf("Replay from the start yielded %v, want both events", got)
 	}
-	got = names("1-0", func(fn func(ReadEvent) error) error { return f.Replay(t.Context(), "run-1", "1-0", fn) })
+	if last != "2-0" {
+		t.Errorf("Replay returned %q as the last id read, want 2-0", last)
+	}
+	got, _ = names(func(fn func(ReadEvent) error) (string, error) {
+		return f.Replay(t.Context(), "run-1", "1-0", fn)
+	})
 	if len(got) != 1 || got[0] != RunFinished {
 		t.Errorf("Replay after 1-0 yielded %v, want just run.finished", got)
 	}
@@ -94,19 +104,45 @@ func TestTheFakeReaderResumesAndBlocks(t *testing.T) {
 	// An empty follow waits out its block, which is what makes the SSE
 	// handler's idle round reachable without a Redis.
 	start := time.Now()
-	got = names("2-0", func(fn func(ReadEvent) error) error { return f.Follow(t.Context(), "run-1", "2-0", fn) })
-	if len(got) != 0 {
-		t.Errorf("Follow past the end yielded %v", got)
+	got, last = names(func(fn func(ReadEvent) error) (string, error) {
+		return f.Follow(t.Context(), "run-1", "2-0", fn)
+	})
+	if len(got) != 0 || last != "" {
+		t.Errorf("Follow past the end yielded %v and id %q", got, last)
 	}
 	if time.Since(start) < 5*time.Millisecond {
 		t.Error("Follow returned without waiting out its block")
 	}
 
-	f.Err = errTest
-	if err := f.Replay(t.Context(), "run-1", "", func(ReadEvent) error { return nil }); err != errTest {
-		t.Errorf("Replay with Err set returned %v, want the error", err)
+	f.Fail(errTest)
+	if _, err := f.Replay(t.Context(), "run-1", "", func(ReadEvent) error { return nil }); err != errTest {
+		t.Errorf("Replay after Fail returned %v, want the error", err)
 	}
-	if err := f.Follow(t.Context(), "run-1", "", func(ReadEvent) error { return nil }); err != errTest {
-		t.Errorf("Follow with Err set returned %v, want the error", err)
+	if _, err := f.Follow(t.Context(), "run-1", "", func(ReadEvent) error { return nil }); err != errTest {
+		t.Errorf("Follow after Fail returned %v, want the error", err)
+	}
+}
+
+// A malformed entry is skipped and still advances the cursor. Without that the
+// SSE handler would ask for it on every round, and XREAD does not block while
+// an entry is waiting — so the loop would spin instead of idling.
+func TestTheFakeReaderAdvancesPastAMalformedEntry(t *testing.T) {
+	f := &FakeReader{}
+	f.SetBlock(time.Millisecond)
+	f.Add(ReadEvent{ID: "1-0", Name: RunStarted}) // no data: Publish never writes this
+
+	var yielded int
+	last, err := f.Replay(t.Context(), "run-1", "", func(ReadEvent) error {
+		yielded++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("replaying: %v", err)
+	}
+	if yielded != 0 {
+		t.Errorf("the malformed entry was yielded %d times, want 0", yielded)
+	}
+	if last != "1-0" {
+		t.Errorf("last id read = %q, want 1-0 so the caller moves past it", last)
 	}
 }

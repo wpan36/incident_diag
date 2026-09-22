@@ -244,10 +244,23 @@ $("file-incident").addEventListener("submit", async (ev) => {
 // ---- runs ----------------------------------------------------------------
 
 async function selectIncident(id) {
+  // Switching incidents drops whatever run was on screen. Without this the
+  // previous incident's timeline stayed up with its stream still open, and
+  // loadRuns's "show the newest run" is gated on there being no run selected,
+  // so it never fired again after the first one.
+  if (id !== state.incidentID) closeTimeline();
   state.incidentID = id;
   $("runs-section").hidden = false;
   await loadIncidents();
   await loadRuns();
+}
+
+function closeTimeline() {
+  closeStream();
+  state.runID = null;
+  state.steps.clear();
+  $("timeline-section").hidden = true;
+  for (const box of ["run-head", "diagnosis", "steps"]) $(box).replaceChildren();
 }
 
 async function loadRuns() {
@@ -324,7 +337,11 @@ function subscribe(id) {
   src.addEventListener("run.finished", (m) => {
     renderRun(JSON.parse(m.data));
     closeStream();
-    loadRuns().catch(showError);
+    // Re-read rather than trust what arrived. A failed publish is logged and
+    // ignored (ADR 0001), so a dropped step.completed leaves a hole no later
+    // event fills — and this is the one ending that does not reconnect, so it
+    // is the one ending that would keep the hole.
+    reload(id).catch(showError);
   });
 
   src.onerror = () => {
@@ -333,14 +350,20 @@ function subscribe(id) {
     // re-read once and stop.
     if (src.readyState !== EventSource.CLOSED) return;
     closeStream();
-    api(`/api/runs/${id}`).then((d) => {
-      state.steps.clear();
-      for (const s of d.steps || []) state.steps.set(s.step_number, s);
-      renderRun(d);
-      renderSteps();
-      return loadRuns();
-    }).catch(showError);
+    reload(id).catch(showError);
   };
+}
+
+// reload re-renders the whole timeline from GET /api/runs/{id}, which is the
+// authoritative source; events are only ever an update to it.
+async function reload(id) {
+  const detail = await api(`/api/runs/${id}`);
+  if (state.runID !== id) return;   // another run was opened while this was in flight
+  state.steps.clear();
+  for (const s of detail.steps || []) state.steps.set(s.step_number, s);
+  renderRun(detail);
+  renderSteps();
+  await loadRuns();
 }
 
 function closeStream() {
@@ -439,9 +462,16 @@ function describeAction(s) {
   if (s.action_type === "none") return "no usable action";
   const a = asObject(s.action);
   if (!a || !a.tool) return s.action_type;
-  const args = a.arguments ? JSON.stringify(a.arguments) : "";
+  // finish's arguments *are* the diagnosis, which the card above renders in
+  // full. Repeating them here put the whole JSON blob inside a heading.
+  if (s.action_type === "finish") return String(a.tool);
+  const args = a.arguments ? clip(JSON.stringify(a.arguments), 160) : "";
   return args ? `${a.tool} ${args}` : String(a.tool);
 }
+
+// clip keeps a heading to about a line. The untruncated action is in the audit
+// row; the heading only has to say which tool ran with roughly what.
+const clip = (v, n) => (v.length > n ? v.slice(0, n) + "…" : v);
 
 // asObject accepts either shape, so a change in how the API renders a raw
 // message cannot silently empty the page.

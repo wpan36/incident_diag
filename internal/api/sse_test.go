@@ -3,6 +3,8 @@ package api
 import (
 	"bufio"
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -60,8 +62,18 @@ func sseConfig() config.Events {
 // and reports when the handler returns — which is what the leak test asserts.
 func sseServer(t *testing.T, runs *fakeRuns, reader *events.FakeReader) (*httptest.Server, <-chan struct{}) {
 	t.Helper()
+	srv, _, done := sseServerLogging(t, runs, reader)
+	return srv, done
+}
 
-	s := NewServer(Deps{EventReader: reader, Events: sseConfig(), Logger: log.Discard()})
+// sseServerLogging is sseServer with the log records kept, for the tests that
+// assert on what a closed stream reported.
+func sseServerLogging(t *testing.T, runs *fakeRuns, reader *events.FakeReader) (*httptest.Server, *lockedBuffer, <-chan struct{}) {
+	t.Helper()
+
+	logged := &lockedBuffer{}
+	s := NewServer(Deps{EventReader: reader, Events: sseConfig(),
+		Logger: log.New(logged, slog.LevelDebug, "api-test")})
 	s.runs = runs
 
 	router := s.Router()
@@ -74,7 +86,26 @@ func sseServer(t *testing.T, runs *fakeRuns, reader *events.FakeReader) (*httpte
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv, done
+	return srv, logged, done
+}
+
+// lockedBuffer collects log records written from the handler's goroutine while
+// the test reads them from its own.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // subscribe opens the event stream. The caller closes the body.
@@ -105,6 +136,14 @@ func readFrames(t *testing.T, resp *http.Response) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// newFakeReader is FakeReader with its block set, which is how every test here
+// keeps an idle round to a millisecond.
+func newFakeReader(block time.Duration) *events.FakeReader {
+	r := &events.FakeReader{}
+	r.SetBlock(block)
+	return r
 }
 
 func startedEvent(id string) events.ReadEvent {
@@ -138,7 +177,7 @@ func TestStreamRunEventsRejectsAnIdThisApplicationCouldNotHaveMade(t *testing.T)
 func TestStreamRunEventsAnswers410ForATerminalRun(t *testing.T) {
 	for _, status := range []string{store.RunSucceeded, store.RunFailed} {
 		t.Run(status, func(t *testing.T) {
-			reader := &events.FakeReader{Block: time.Millisecond}
+			reader := newFakeReader(time.Millisecond)
 			reader.Add(startedEvent("1-0"))
 			srv, _ := sseServer(t, &fakeRuns{statuses: []string{status}}, reader)
 
@@ -163,7 +202,7 @@ func TestStreamRunEventsAnswers410ForATerminalRun(t *testing.T) {
 
 // The whole stream replays, oldest first, and run.finished ends the request.
 func TestStreamRunEventsReplaysThenClosesOnRunFinished(t *testing.T) {
-	reader := &events.FakeReader{Block: time.Millisecond}
+	reader := newFakeReader(time.Millisecond)
 	reader.Add(startedEvent("1-0"), finishedEvent("2-0"))
 	runs := &fakeRuns{statuses: []string{store.RunRunning}}
 	srv, done := sseServer(t, runs, reader)
@@ -196,7 +235,7 @@ func TestStreamRunEventsReplaysThenClosesOnRunFinished(t *testing.T) {
 // The payload is json.Marshal output, which escapes newlines, so a frame is
 // always one data: line — a multi-line one would be read as two events.
 func TestStreamRunEventsWritesAPayloadWithANewlineAsOneLine(t *testing.T) {
-	reader := &events.FakeReader{Block: time.Millisecond}
+	reader := newFakeReader(time.Millisecond)
 	reader.Add(events.ReadEvent{
 		ID:   "1-0",
 		Name: events.RunFinished,
@@ -219,7 +258,7 @@ func TestStreamRunEventsWritesAPayloadWithANewlineAsOneLine(t *testing.T) {
 // A reconnecting client resumes after its Last-Event-ID and is sent nothing
 // twice.
 func TestStreamRunEventsResumesFromLastEventID(t *testing.T) {
-	reader := &events.FakeReader{Block: time.Millisecond}
+	reader := newFakeReader(time.Millisecond)
 	reader.Add(startedEvent("1-0"), finishedEvent("2-0"))
 	srv, _ := sseServer(t, &fakeRuns{statuses: []string{store.RunRunning}}, reader)
 
@@ -239,7 +278,7 @@ func TestStreamRunEventsResumesFromLastEventID(t *testing.T) {
 // replays, which is wasteful and correct.
 func TestStreamRunEventsIgnoresAMalformedLastEventID(t *testing.T) {
 	for _, id := range []string{"nonsense", "1-0; DROP", "1", "-1", ""} {
-		reader := &events.FakeReader{Block: time.Millisecond}
+		reader := newFakeReader(time.Millisecond)
 		reader.Add(startedEvent("1-0"), finishedEvent("2-0"))
 		srv, _ := sseServer(t, &fakeRuns{statuses: []string{store.RunRunning}}, reader)
 
@@ -257,7 +296,7 @@ func TestStreamRunEventsIgnoresAMalformedLastEventID(t *testing.T) {
 // failed publish — ends on the terminal re-read instead. Without it the client
 // would hang until it gave up.
 func TestStreamRunEventsClosesWhenTheRunTurnsTerminalWithoutAnEvent(t *testing.T) {
-	reader := &events.FakeReader{Block: time.Millisecond}
+	reader := newFakeReader(time.Millisecond)
 	reader.Add(startedEvent("1-0"))
 	runs := &fakeRuns{statuses: []string{store.RunRunning, store.RunRunning, store.RunSucceeded}}
 	srv, done := sseServer(t, runs, reader)
@@ -281,7 +320,7 @@ func TestStreamRunEventsClosesWhenTheRunTurnsTerminalWithoutAnEvent(t *testing.T
 // The heartbeat fires only after silence: a comment frame keeps an idle
 // connection alive without inventing a fourth event name.
 func TestStreamRunEventsPingsAfterSilence(t *testing.T) {
-	reader := &events.FakeReader{Block: time.Millisecond}
+	reader := newFakeReader(time.Millisecond)
 	srv, done := sseServer(t, &fakeRuns{statuses: []string{store.RunRunning}}, reader)
 
 	resp := subscribe(t, srv, "")
@@ -305,7 +344,7 @@ func TestStreamRunEventsPingsAfterSilence(t *testing.T) {
 // A busy run sends no pings: an event is its own keepalive, which is why the
 // heartbeat is a timestamp rather than a ticker.
 func TestStreamRunEventsDoesNotPingWhileEventsArrive(t *testing.T) {
-	reader := &events.FakeReader{Block: time.Millisecond}
+	reader := newFakeReader(time.Millisecond)
 	reader.Add(startedEvent("1-0"))
 	srv, done := sseServer(t, &fakeRuns{statuses: []string{store.RunRunning}}, reader)
 
@@ -335,7 +374,7 @@ func TestStreamRunEventsDoesNotPingWhileEventsArrive(t *testing.T) {
 // leave nothing behind. This proves the handler returns; whether go-redis
 // released its connection is a different failure.
 func TestStreamRunEventsLeavesNothingBehindWhenTheClientDisconnects(t *testing.T) {
-	reader := &events.FakeReader{Block: time.Millisecond}
+	reader := newFakeReader(time.Millisecond)
 	reader.Add(startedEvent("1-0"))
 	srv, done := sseServer(t, &fakeRuns{statuses: []string{store.RunRunning}}, reader)
 
@@ -368,5 +407,105 @@ func waitForHandler(t *testing.T, done <-chan struct{}) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the handler did not return")
+	}
+}
+
+// A Redis failure mid-stream closes the stream and logs it. The headers are
+// already sent, so there is no status left and there is no synthetic error
+// event either — the vocabulary is S8's three names. The client reconnects, or
+// takes its answer from GET /api/runs/{id}.
+func TestStreamRunEventsClosesAndLogsWhenTheReaderFailsMidStream(t *testing.T) {
+	reader := newFakeReader(20 * time.Millisecond)
+	reader.Add(startedEvent("1-0"))
+	srv, logged, done := sseServerLogging(t, &fakeRuns{statuses: []string{store.RunRunning}}, reader)
+
+	resp := subscribe(t, srv, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 before the failure", resp.StatusCode)
+	}
+
+	// Read the whole replayed frame, then fail the reader while the handler is
+	// blocked in Follow — which is the only moment this path is reachable.
+	r := bufio.NewReader(resp.Body)
+	var first strings.Builder
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading the first frame: %v", err)
+		}
+		first.WriteString(line)
+		if line == "\n" {
+			break
+		}
+	}
+	if !strings.Contains(first.String(), "id: 1-0") {
+		t.Fatalf("first frame = %q, want the replayed event", first.String())
+	}
+	reader.Fail(errors.New("connection reset by peer"))
+
+	var rest strings.Builder
+	for {
+		line, err := r.ReadString('\n')
+		rest.WriteString(line)
+		if err != nil {
+			break
+		}
+	}
+	if strings.Contains(rest.String(), "event: ") {
+		t.Errorf("after the failure the stream sent %q, want no synthesised event", rest.String())
+	}
+	waitForHandler(t, done)
+
+	if got := logged.String(); !strings.Contains(got, "a run's event stream ended early") ||
+		!strings.Contains(got, "connection reset by peer") {
+		t.Errorf("logged %q, want the stream's failure recorded with its cause", got)
+	}
+}
+
+// A client going away is this endpoint's normal ending, not an error. Logging
+// it would put a warning in the record of every successful page view.
+func TestStreamRunEventsDoesNotLogAClientDisconnect(t *testing.T) {
+	reader := newFakeReader(time.Millisecond)
+	reader.Add(startedEvent("1-0"))
+	srv, logged, done := sseServerLogging(t, &fakeRuns{statuses: []string{store.RunRunning}}, reader)
+
+	resp := subscribe(t, srv, "")
+	r := bufio.NewReader(resp.Body)
+	if _, err := r.ReadString('\n'); err != nil {
+		t.Fatalf("reading the first frame: %v", err)
+	}
+	resp.Body.Close()
+	waitForHandler(t, done)
+
+	if got := logged.String(); strings.Contains(got, "ended early") {
+		t.Errorf("logged %q, want a disconnect to go unremarked", got)
+	}
+}
+
+// An entry the publisher could not have written is skipped, and the handler
+// still moves its cursor past it.
+//
+// The regression this guards: the cursor used to advance only on a delivered
+// frame, so the skipped entry was re-read on every round — and a real XREAD
+// returns immediately while an entry is waiting, which turned an idle stream
+// into a spin that also re-read the run from MySQL each time. The assertion is
+// the GetRun count: an idle round does exactly one.
+func TestStreamRunEventsMovesPastAMalformedEntry(t *testing.T) {
+	reader := newFakeReader(20 * time.Millisecond)
+	reader.Add(events.ReadEvent{ID: "1-0", Name: events.RunStarted}) // no data
+	runs := &fakeRuns{statuses: []string{store.RunRunning}}
+	srv, done := sseServer(t, runs, reader)
+
+	resp := subscribe(t, srv, "")
+
+	// Long enough for a spinning handler to run thousands of rounds and a
+	// correct one about five.
+	time.Sleep(100 * time.Millisecond)
+	resp.Body.Close()
+	waitForHandler(t, done)
+
+	if n := runs.count(); n > 20 {
+		t.Errorf("GetRun was called %d times in 100ms: the malformed entry is being re-read", n)
 	}
 }

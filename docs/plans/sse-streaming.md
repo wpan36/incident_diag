@@ -108,14 +108,14 @@ after := Last-Event-ID                   "" when absent or malformed
 
 send := func(ev) error {                 one frame
     extend the deadline; write id:/event:/data:; flush
-    after, lastWrite = ev.ID, now
+    lastWrite = now
     if ev.Name == run.finished { return errStreamDone }
     return nil
 }
 
-Replay(ctx, id, after, send)             any error, errStreamDone included, ends the request
+after, _ = Replay(ctx, id, after, send)  any error, errStreamDone included, ends the request
 for ctx.Err() == nil {
-    Follow(ctx, id, after, send)         blocks up to SSE_READ_BLOCK
+    after, _ = Follow(ctx, id, after, send)   blocks up to SSE_READ_BLOCK
     if send wrote anything { continue }  an event is its own keepalive
     if GetRun(id) is terminal { return } the publish was dropped
     if now-lastWrite >= SSE_HEARTBEAT { write ": ping"; flush; lastWrite = now }
@@ -237,16 +237,18 @@ type ReadEvent struct {
 	Data json.RawMessage // the payload, still encoded
 }
 
-// Reader is what the SSE endpoint reads a run's stream through.
+// Reader is what the SSE endpoint reads a run's stream through. Both methods
+// return the id of the last entry they read, which is the caller's next
+// `after`.
 type Reader interface {
 	// Replay yields every entry after `after`, oldest first, and returns when
 	// the stream's current end is reached. An empty `after` starts at the
 	// beginning.
-	Replay(ctx context.Context, runID, after string, fn func(ReadEvent) error) error
+	Replay(ctx context.Context, runID, after string, fn func(ReadEvent) error) (string, error)
 
 	// Follow blocks for at most SSE_READ_BLOCK and yields whatever arrived,
 	// returning nil having yielded nothing when the block expires.
-	Follow(ctx context.Context, runID, after string, fn func(ReadEvent) error) error
+	Follow(ctx context.Context, runID, after string, fn func(ReadEvent) error) (string, error)
 }
 ```
 
@@ -266,6 +268,12 @@ type Reader interface {
 - **Cancellation is not an error.** When `ctx` ends, both return nil. A client disconnecting
   is this endpoint's normal ending, and making every caller filter `context.Canceled` out of
   its logging is a trap.
+- **The cursor is a return value, not the last `ReadEvent` the callback was handed.** An
+  entry missing `event` or `data` is skipped rather than failing the stream, and it still
+  advances the returned id. A handler tracking only deliveries would ask for that entry on
+  every round, and `XREAD` returns immediately while an entry is waiting — so the loop below
+  spins at full CPU and re-reads the run from MySQL each time instead of idling. Measured at
+  ~40k rounds per second.
 
 Both methods are implemented by the existing `*Client` and both use `StreamKey`.
 `FakeReader` joins `FakePublisher` in `fake.go`: a slice of `ReadEvent`, an `Err` every call
@@ -299,11 +307,14 @@ restarted, and a Redis that is down costs a live timeline, not the API.
 - `make check`, against `FakeReader` — frame formatting, including a payload containing a
   newline; `Last-Event-ID` parsing, including a malformed one; the heartbeat firing only
   after silence; a terminal run answering 410 without opening a stream; a run whose stream
-  never received `run.finished` closing on the terminal re-read; a goroutine leak test that
-  disconnects mid-stream.
+  never received `run.finished` closing on the terminal re-read; a reader that fails
+  mid-stream closing the stream and logging it, with no synthesised event; a client
+  disconnect going unlogged; a malformed entry not costing more than one idle round; a
+  goroutine leak test that disconnects mid-stream.
 - `make test-integration`, against real Redis — a client connected before the run sees every
   event in order; a reconnect with `Last-Event-ID` resumes without duplicates; an empty
-  replay followed by a publish delivers that publish; a restarted run's stream begins again.
+  replay followed by a publish delivers that publish; a restarted run's stream begins again;
+  a malformed entry is skipped and the next `Follow` still blocks.
 - End to end: start a run and watch `curl -N` print the timeline as it happens, then re-issue
   the same `curl` and get 410.
 

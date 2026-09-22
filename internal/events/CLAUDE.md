@@ -14,7 +14,8 @@ side and `docs/plans/sse-streaming.md` (S9) for the read side.
 - `read.go` — `ReadEvent`, the `Reader` interface, and the `Client`'s `Replay` (`XRANGE`)
   and `Follow` (`XREAD BLOCK`).
 - `fake.go` — `FakePublisher`, which records what would have been published, and
-  `FakeReader`, a slice-backed `Reader` with an `Add` a test publishes through.
+  `FakeReader`, a slice-backed `Reader` with an `Add` a test publishes through, plus `Fail`
+  and `SetBlock`.
 - `events_test.go` — the stream key, the event names, the fakes.
 - `integration_test.go` — `//go:build integration`. Real Redis, via `TEST_REDIS_URL`.
 
@@ -44,6 +45,12 @@ returns. `cmd/agent-worker` and `cmd/api` each own a `Client`.
   handler deliberately owns none — it blocks in `Follow` itself. An error from the callback
   stops the iteration and comes back unchanged, which is how the handler ends a request
   from inside a frame write.
+- **Both reads return the last entry id they *read*, which is the caller's next `after`.**
+  Not the id of the last entry they yielded: a malformed entry is skipped and still moves
+  the cursor. A caller that tracked only deliveries would ask for that entry on every round,
+  and `XREAD` returns immediately while an entry is waiting — so the SSE loop spun at full
+  CPU, re-reading the run from MySQL each time, instead of idling. Measured at ~40k rounds
+  per second before the fix.
 - **`Replay`'s range is exclusive** — `XRANGE key (<id> +`, Redis 6.2 and later — so a
   reconnecting client is never sent an event twice and no sequence number is incremented by
   hand.
@@ -75,5 +82,10 @@ returns. `cmd/agent-worker` and `cmd/api` each own a `Client`.
   events and discarding most of them, and its `MAXLEN` would evict a quiet run's history
   because a busy one filled it.
 - **`REDIS_URL` may carry a password**, so `config.Events.String` does not print it.
+- **`FakeReader`'s error and block go through `Fail` and `SetBlock`, not exported fields.**
+  A test saying "Redis failed mid-stream" has to say it while the handler is already blocked
+  in `Follow`, and an unsynchronised field would make that test a `-race` failure.
+  `deliverFake` mirrors `Client.deliver`, skip rule included, so the fake cannot hide the
+  spin that rule caused.
 - **Integration tests use `TEST_REDIS_URL`**, which points at a different Redis database
   from `REDIS_URL` so a test run cannot disturb a locally running worker's streams.

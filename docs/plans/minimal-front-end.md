@@ -37,6 +37,14 @@ events at all. So:
 3. `onerror` with `readyState === CLOSED` re-fetches the run once and stops. It does not
    reconnect: a 410 means the run is over, and reconnecting would be the loop S9's 410 rule
    exists to prevent.
+4. **`run.finished` re-fetches too.** A failed publish is logged and ignored (ADR 0001), so
+   a dropped `step.completed` leaves a hole, and this is the one ending that closes the
+   stream itself rather than reconnecting into the 410 — so it is the one ending that would
+   keep the hole.
+
+Selecting a different incident clears the run on screen and closes its stream. "Show the
+newest run" only fires when no run is selected, so without the clear the previous incident's
+timeline stays up.
 
 Deduplication is by `step_number` within the current attempt, which is why `run.started`
 clears rather than merges — a restarted run re-uses 1..n (ADR 0009).

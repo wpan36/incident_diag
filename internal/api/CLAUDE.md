@@ -103,6 +103,11 @@ and where stored types become wire types.
   finishes between the client's `GET /api/runs/{id}` and its subscribe answers 410 and the
   client re-fetches. The front end must therefore render the timeline from the fetch and
   treat events as updates to it, not as its only source.
+- **The SSE cursor advances by what the reader read, not by what it delivered.**
+  `Replay` and `Follow` return the last entry id they saw; the handler assigns it to `after`
+  whether or not a frame went out. A malformed entry is skipped without a frame, and a
+  cursor that moved only on delivery re-read it on every round — `XREAD` does not block
+  while an entry is waiting, so the loop spun and re-read the run from MySQL each time.
 - **The SSE handler owns no goroutine.** It blocks in `events.Reader.Follow` itself, so the
   request is the one thing to cancel and `r.Context()` is the one way to stop it. A writer
   goroutine fed by a channel is the usual SSE shape and would exist here only to be leaked.

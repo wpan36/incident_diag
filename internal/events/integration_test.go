@@ -168,11 +168,12 @@ func TestTrimmingAStreamThatDoesNotExistIsFine(t *testing.T) {
 	}
 }
 
-// collect drains a reader call into a slice.
-func collect(t *testing.T, call func(func(ReadEvent) error) error) []ReadEvent {
+// collect drains a reader call into a slice, discarding the last id read —
+// which the tests that care about it assert on directly.
+func collect(t *testing.T, call func(func(ReadEvent) error) (string, error)) []ReadEvent {
 	t.Helper()
 	var got []ReadEvent
-	if err := call(func(ev ReadEvent) error {
+	if _, err := call(func(ev ReadEvent) error {
 		got = append(got, ev)
 		return nil
 	}); err != nil {
@@ -195,7 +196,7 @@ func TestReplayYieldsTheWholeStreamInOrder(t *testing.T) {
 		}
 	}
 
-	got := collect(t, func(fn func(ReadEvent) error) error { return c.Replay(ctx, runID, "", fn) })
+	got := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Replay(ctx, runID, "", fn) })
 	if len(got) != 3 {
 		t.Fatalf("Replay yielded %d events, want 3", len(got))
 	}
@@ -228,12 +229,12 @@ func TestReplayAfterAnIDIsExclusive(t *testing.T) {
 			t.Fatalf("Publish: %v", err)
 		}
 	}
-	all := collect(t, func(fn func(ReadEvent) error) error { return c.Replay(ctx, runID, "", fn) })
+	all := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Replay(ctx, runID, "", fn) })
 	if len(all) != 3 {
 		t.Fatalf("Replay yielded %d events, want 3", len(all))
 	}
 
-	got := collect(t, func(fn func(ReadEvent) error) error { return c.Replay(ctx, runID, all[0].ID, fn) })
+	got := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Replay(ctx, runID, all[0].ID, fn) })
 	if len(got) != 2 {
 		t.Fatalf("resuming after %s yielded %d events, want 2", all[0].ID, len(got))
 	}
@@ -258,7 +259,7 @@ func TestReplayStopsAtTheCallbacksError(t *testing.T) {
 	}
 
 	seen := 0
-	err := c.Replay(ctx, runID, "", func(ReadEvent) error {
+	_, err := c.Replay(ctx, runID, "", func(ReadEvent) error {
 		seen++
 		return errTest
 	})
@@ -278,7 +279,7 @@ func TestFollowReturnsNothingWhenNothingArrives(t *testing.T) {
 	runID := id.New()
 
 	start := time.Now()
-	got := collect(t, func(fn func(ReadEvent) error) error { return c.Follow(ctx, runID, "", fn) })
+	got := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Follow(ctx, runID, "", fn) })
 	if len(got) != 0 {
 		t.Errorf("Follow yielded %d events on an empty stream", len(got))
 	}
@@ -296,14 +297,14 @@ func TestFollowAfterAnEmptyReplayDeliversWhatArrivesNext(t *testing.T) {
 	runID := id.New()
 	t.Cleanup(func() { c.rdb.Del(ctx, StreamKey(runID)) })
 
-	if got := collect(t, func(fn func(ReadEvent) error) error { return c.Replay(ctx, runID, "", fn) }); len(got) != 0 {
+	if got := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Replay(ctx, runID, "", fn) }); len(got) != 0 {
 		t.Fatalf("a stream that was never written replayed %d events", len(got))
 	}
 	if err := c.Publish(ctx, runID, Event{Name: RunStarted, Payload: map[string]string{"id": runID}}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	got := collect(t, func(fn func(ReadEvent) error) error { return c.Follow(ctx, runID, "", fn) })
+	got := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Follow(ctx, runID, "", fn) })
 	if len(got) != 1 || got[0].Name != RunStarted {
 		t.Fatalf("Follow yielded %v, want the event published after the replay", got)
 	}
@@ -323,7 +324,7 @@ func TestFollowWakesOnAPublish(t *testing.T) {
 		_ = publisher.Publish(ctx, runID, Event{Name: StepCompleted, Payload: map[string]int{"step": 1}})
 	}()
 
-	got := collect(t, func(fn func(ReadEvent) error) error { return c.Follow(ctx, runID, "", fn) })
+	got := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Follow(ctx, runID, "", fn) })
 	if len(got) != 1 || got[0].Name != StepCompleted {
 		t.Fatalf("Follow yielded %v, want the published step", got)
 	}
@@ -338,10 +339,10 @@ func TestCancellationIsNotAnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := c.Replay(ctx, runID, "", func(ReadEvent) error { return nil }); err != nil {
+	if _, err := c.Replay(ctx, runID, "", func(ReadEvent) error { return nil }); err != nil {
 		t.Errorf("Replay on a cancelled context: %v", err)
 	}
-	if err := c.Follow(ctx, runID, "", func(ReadEvent) error { return nil }); err != nil {
+	if _, err := c.Follow(ctx, runID, "", func(ReadEvent) error { return nil }); err != nil {
 		t.Errorf("Follow on a cancelled context: %v", err)
 	}
 }
@@ -358,7 +359,7 @@ func TestAReaderResumingAcrossARestartSeesTheNewAttempt(t *testing.T) {
 	if err := c.Publish(ctx, runID, Event{Name: RunStarted, Payload: map[string]int{"attempt": 1}}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	first := collect(t, func(fn func(ReadEvent) error) error { return c.Replay(ctx, runID, "", fn) })
+	first := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Replay(ctx, runID, "", fn) })
 	if len(first) != 1 {
 		t.Fatalf("the first attempt replayed %d events, want 1", len(first))
 	}
@@ -370,8 +371,52 @@ func TestAReaderResumingAcrossARestartSeesTheNewAttempt(t *testing.T) {
 		t.Fatalf("Publish after the trim: %v", err)
 	}
 
-	got := collect(t, func(fn func(ReadEvent) error) error { return c.Replay(ctx, runID, first[0].ID, fn) })
+	got := collect(t, func(fn func(ReadEvent) error) (string, error) { return c.Replay(ctx, runID, first[0].ID, fn) })
 	if len(got) != 1 || got[0].Name != RunStarted {
 		t.Fatalf("resuming across the restart yielded %v, want the new attempt's run.started", got)
+	}
+}
+
+// A malformed entry is skipped, and the cursor still moves past it.
+//
+// This is the regression for a spin: deliver used to skip without reporting
+// the id, so the caller re-read the same entry on every round — and XREAD
+// returns immediately while an entry is waiting, so an idle Follow stopped
+// idling. The assertion is the wall clock: the second Follow has nothing left
+// to read and must wait out its block.
+func TestFollowAdvancesPastAMalformedEntry(t *testing.T) {
+	c := testClient(t)
+	runID := id.New()
+	ctx := context.Background()
+	t.Cleanup(func() { c.rdb.Del(ctx, StreamKey(runID)) })
+
+	// An entry Publish would never write: the data field is missing.
+	if err := c.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: StreamKey(runID),
+		Values: map[string]any{FieldEvent: RunStarted, FieldRunID: runID},
+	}).Err(); err != nil {
+		t.Fatalf("writing a malformed entry: %v", err)
+	}
+
+	var yielded int
+	count := func(ReadEvent) error { yielded++; return nil }
+
+	last, err := c.Follow(ctx, runID, "", count)
+	if err != nil {
+		t.Fatalf("following: %v", err)
+	}
+	if yielded != 0 {
+		t.Errorf("the malformed entry was yielded %d times, want 0", yielded)
+	}
+	if last == "" {
+		t.Fatal("Follow reported no id read, so the caller would re-read the malformed entry forever")
+	}
+
+	start := time.Now()
+	if _, err := c.Follow(ctx, runID, last, count); err != nil {
+		t.Fatalf("following again: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < c.cfg.ReadBlock {
+		t.Errorf("the second Follow returned after %s, want it to block for %s", elapsed, c.cfg.ReadBlock)
 	}
 }

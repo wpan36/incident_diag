@@ -22,6 +22,17 @@ JSON.
   on top. A run that fails in its first seconds is terminal before the page can subscribe,
   and the events endpoint answers 410 with nothing to replay — so events are never the only
   source.
+- **Every ending re-reads the run.** `reload` re-renders the timeline from
+  `GET /api/runs/{id}` on `run.finished` as well as on `onerror`. A failed publish is logged
+  and ignored (ADR 0001), so a dropped `step.completed` leaves a hole — and `run.finished`
+  is the one ending that closes the stream itself, so without the re-read it is the one
+  ending that would keep the hole.
+- **Selecting an incident drops the run on screen.** `closeTimeline` clears it and closes
+  the stream, because `loadRuns`'s "show the newest run" is gated on no run being selected:
+  without it the previous incident's timeline stayed up, with its stream still open.
+- **A finish step's heading is just `finish`.** Its `action` is the whole diagnosis — 3KB in
+  a real run — which the card above already renders. Other actions have their arguments
+  clipped to 160 characters.
 - **`onerror` does not reconnect.** A closed stream means the run is over; `EventSource`
   would otherwise retry every three seconds against an endpoint that answers 410 forever.
   It re-reads the run once and stops.

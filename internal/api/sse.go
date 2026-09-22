@@ -71,6 +71,7 @@ func (s *Server) stream(c *gin.Context, runID string) {
 	w.WriteHeaderNow()
 	lastWrite := time.Now()
 	if err := s.flush(rc); err != nil {
+		s.streamEnded(ctx, runID, err)
 		return
 	}
 
@@ -81,21 +82,33 @@ func (s *Server) stream(c *gin.Context, runID string) {
 		if err := s.writeFrame(rc, w, ev); err != nil {
 			return err
 		}
-		after, lastWrite, wrote = ev.ID, time.Now(), true
+		lastWrite, wrote = time.Now(), true
 		if ev.Name == events.RunFinished {
 			return errStreamDone
 		}
 		return nil
 	}
 
-	if err := s.deps.EventReader.Replay(ctx, runID, after, send); err != nil {
+	// `after` advances by what the reader *read*, not by what send was handed.
+	// A malformed entry is skipped without a frame, and a cursor that only
+	// moved on delivery would ask for that entry again on every round — and
+	// XREAD does not block while one is waiting, so the loop below would spin.
+	last, err := s.deps.EventReader.Replay(ctx, runID, after, send)
+	if last != "" {
+		after = last
+	}
+	if err != nil {
 		s.streamEnded(ctx, runID, err)
 		return
 	}
 
 	for ctx.Err() == nil {
 		wrote = false
-		if err := s.deps.EventReader.Follow(ctx, runID, after, send); err != nil {
+		last, err := s.deps.EventReader.Follow(ctx, runID, after, send)
+		if last != "" {
+			after = last
+		}
+		if err != nil {
 			s.streamEnded(ctx, runID, err)
 			return
 		}
