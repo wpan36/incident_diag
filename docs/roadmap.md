@@ -108,6 +108,10 @@ Specified by S6, which is written at the top of Phase C.
 | M32 | Agent evaluation (Tier B): run the agent against every injectable fault scenario and report diagnosis accuracy, steps, tool calls, token cost and latency percentiles in `docs/agent-eval.md`. Includes scenarios the agent should fail to diagnose, so the numbers mean something | todo |
 | M33 | Provider-switch smoke test against a second hosted OpenAI-compatible provider; finish `docs/architecture.md`, demo script, screenshots, README | todo |
 
+**M32's spec is written after M31 has run**, not before: which scenarios discriminate is a
+question about how the agent actually behaves, and the scenario set is the expensive part to
+get wrong.
+
 **What M32 has to be, to be worth reporting.** Three scenarios give an accuracy with four
 possible values, which is a smoke test wearing a benchmark's clothes. Three requirements,
 agreed before the milestone was specified:
