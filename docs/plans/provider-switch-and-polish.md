@@ -28,8 +28,12 @@ test here.
 ### The README is written for someone who has never seen this
 
 What it is, what problem it solves, how to run it, the architecture in one diagram, and a
-demo walkthrough with screenshots. No internal trade-offs: those live in `docs/adr/`, and a
-README that argues with itself is not an introduction.
+demo walkthrough. No internal trade-offs: those live in `docs/adr/`, and a README that
+argues with itself is not an introduction.
+
+Screenshots were planned and dropped. The README shows a real run's step table and its
+diagnosis as text, which says the same thing, survives a change to the page, and can be
+read in a terminal.
 
 The claims it makes have to be ones this repository can support. `answer.delta` was cancelled
 (ADR 0010), hybrid retrieval was cancelled (ADR 0007), and the agent is read-only — the
@@ -38,9 +42,14 @@ README says what exists.
 ### The demo script
 
 `make demo`, or a documented sequence: bring the stack up, upload the corpus, inject a fault,
-file the incident, open the page. It is what produces the screenshots, and it is the first
-thing that breaks when something regresses, which makes it worth having in the repository
-rather than in someone's shell history.
+file the incident, open the page. It is the first thing that breaks when something
+regresses, which makes it worth having in the repository rather than in someone's shell
+history.
+
+It skips a document that is already indexed and reads the corpus manifest for what each one
+is. Both were found by running it: the first version uploaded unconditionally, so a second
+run put two copies of every runbook in the index and retrieval spent its top-k on the
+duplicates.
 
 ### Finishing the documents
 
