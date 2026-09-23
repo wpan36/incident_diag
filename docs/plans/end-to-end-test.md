@@ -77,6 +77,24 @@ outcomes to aggregate rather than failures to report.
 
 `make test-integration` with the full stack and a key. Without the key it skips, and says so.
 
+## What running it changed
+
+**The shipped budget is too small for this scenario.** At `AGENT_MAX_TOOL_CALLS=6` and
+`AGENT_MAX_STEPS=8`, both trial runs stopped at a bound rather than finishing, and one named
+checkout-service — it had spent its calls before it could separate "payment-service is slow"
+from "checkout's timeout is too short". The harness raises the budget to 12 steps and 10 tool
+calls, where the run converged. How much is actually needed is M32's question; whether the
+default should move is a decision for after it.
+
+**`affected_service` was not a service name.** One run answered
+`"payment-service (root cause upstream, in the card processor it calls)"`. The finish schema
+now asks for one name and nothing else, and the test checks that the field names the service
+rather than equals it, because the field is still free text.
+
+**The harness cannot share a consumer group with a running worker.** It joins
+`ingestion-worker` and `agent-worker`, so a deployed worker takes half the messages and fails
+them against a storage root it does not share.
+
 ## Known limitations, accepted
 
 **One scenario proves the pipeline, not the agent.** Accuracy is M32's question; this

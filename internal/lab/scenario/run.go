@@ -44,6 +44,12 @@ type Config struct {
 	// MaxInFlight bounds the generator's goroutines. Reaching it is reported.
 	MaxInFlight int
 
+	// PrometheusURL is only used by Driver.ResetMetrics, which the agent
+	// evaluation calls between scenarios. Empty means the history is left
+	// alone, which is what Run wants: its report is about what moved during
+	// the run, and it measures that with its own before/after snapshots.
+	PrometheusURL string
+
 	Params Params
 	Out    io.Writer
 }

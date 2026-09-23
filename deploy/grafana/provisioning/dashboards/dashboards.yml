@@ -1,0 +1,13 @@
+# Dashboards are files in the image rather than rows in Grafana's database, so
+# that `make up-lab` brings them up and a change to one is a diff.
+apiVersion: 1
+
+providers:
+  - name: incident_diag
+    type: file
+    disableDeletion: true
+    # Editing a panel in the UI is fine; the file wins on the next restart.
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

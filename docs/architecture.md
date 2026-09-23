@@ -241,13 +241,22 @@ against fixtures.
 
 ## Observability
 
-OpenTelemetry instruments the HTTP API, Kafka produce and consume (trace context
-propagated through headers), retrieval, embedding, LLM requests, MCP tool calls and the
-agent run itself. A single agent run should appear as one coherent trace.
+OpenTelemetry instruments the HTTP API (`otelgin`), Kafka produce and consume (`kotel`,
+which carries the trace context in record headers), every outgoing HTTP client
+(`otelhttp`), and — by hand — retrieval, embedding, LLM requests, MCP tool calls, each
+agent step and the agent run itself. One investigation is one trace, rooted at the API
+request that created the run and reaching into ops-mcp. It exports to Jaeger over OTLP and
+is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. See
+[`docs/plans/tracing.md`](plans/tracing.md).
 
-Prometheus metrics cover agent runs, steps, tool calls, LLM latency, retrieval latency and
-Kafka processing latency, surfaced through two Grafana dashboards: agent run health and
-pipeline health.
+Prometheus metrics cover agent runs, steps, tool calls, LLM latency and token cost,
+retrieval and embedding latency, Kafka processing latency and reconciler activity, on two
+provisioned Grafana dashboards: agent runs and pipeline. `cmd/api` and `cmd/ops-mcp` serve
+`/metrics` on the listener they already have; the two workers get one of their own on
+`METRICS_ADDR`. See [`docs/plans/metrics-and-dashboards.md`](plans/metrics-and-dashboards.md).
+
+The agent's accuracy is measured rather than claimed: `cmd/agent-eval` runs it against every
+fault the Incident Lab can produce and writes [`docs/agent-eval.md`](agent-eval.md).
 
 ## Deliberate non-goals
 

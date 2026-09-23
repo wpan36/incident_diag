@@ -165,6 +165,25 @@ since PromQL cannot express it.
 
 **The specific limits are guesses** and are revisited once real tool output exists.
 
+#### The series cap answers with the metric names it matched
+
+M32 is the real tool output this said to wait for, and it falsified the claim above for
+one case: 35 of 240 tool calls were refused, almost all of them queries like
+`{job="payment-service"}` or `count by (__name__) (...)` — the agent asking what metrics
+exist. "Narrow it with a label matcher or an aggregation" is advice it could not take,
+because those already are aggregations and it did not know the names to narrow to. One run
+spent three consecutive tool calls in that loop and then ran out of budget before reaching
+the metric that would have diagnosed the incident.
+
+So an over-cap refusal now carries the distinct `__name__` values the query matched, up to
+eighty. That is the same move `unknownName` already makes for a wrong service — answer with
+the valid set rather than with a rule — and it costs nothing, because the labels are in the
+response that has already arrived.
+
+A fourth tool over `/api/v1/label/__name__/values` was considered. It would not violate the
+"no paths, no URLs" boundary, but it adds to a surface deliberately kept at three when an
+existing refusal can carry the same answer.
+
 ### The log format
 
 Every process in the system logs through `internal/log`, so one package defines the shape.

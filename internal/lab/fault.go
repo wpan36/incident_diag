@@ -21,10 +21,13 @@ const (
 	KindCPU     = "cpu"
 )
 
-// maxCPUWorkers caps the cpu fault. The point is to saturate a container
+// MaxCPUWorkers caps the cpu fault. The point is to saturate a container
 // limited to one CPU, and an unbounded worker count in a lab endpoint with no
 // authentication is a foot-gun rather than a feature.
-const maxCPUWorkers = 32
+//
+// Exported because internal/lab/scenario's payment-cpu case asks for the
+// maximum by name rather than repeating the number.
+const MaxCPUWorkers = 32
 
 // LatencyFault delays each request. On checkout-service it is applied before
 // the handler runs; on payment-service it is added to the simulated processor
@@ -167,8 +170,8 @@ func (c *Controller) SetError(f ErrorFault) error {
 
 // SetCPU starts or stops the spinning goroutines.
 func (c *Controller) SetCPU(f CPUFault) error {
-	if f.Enabled && (f.Workers < 1 || f.Workers > maxCPUWorkers) {
-		return fmt.Errorf("workers must be between 1 and %d, got %d", maxCPUWorkers, f.Workers)
+	if f.Enabled && (f.Workers < 1 || f.Workers > MaxCPUWorkers) {
+		return fmt.Errorf("workers must be between 1 and %d, got %d", MaxCPUWorkers, f.Workers)
 	}
 	f.Kind = KindCPU
 	c.mu.Lock()

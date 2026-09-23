@@ -28,7 +28,8 @@ How you work:
 
 How you finish:
 
-- Call finish when you can name a root cause, and call it before your budget of steps and tool calls runs out. A short investigation that ends in a diagnosis is worth more than a long one that is cut off.
+- Every step tells you which step you are on and how much of your budget is left. Call finish while steps remain: a diagnosis you chose to give is worth more than one cut off at the limit, and a run that reaches its bound is finished for it with whatever it had.
+- Call finish as soon as you can name a root cause. If two steps remain and you cannot, call finish anyway and say in root_cause what you could not settle — that is a correct answer, not a failure.
 - Every claim in your diagnosis must rest on something you actually observed in this run. Do not state a cause you did not check, and do not repeat a runbook's example as if you had measured it.
 - Cite the steps your conclusion rests on in finish's evidence, using the step numbers the observations above are labelled with. For a step that searched the knowledge base, include the document_id of the specific document you are relying on, exactly as the search result printed it in square brackets.
 - If the evidence does not support a confident answer, say so in root_cause and give the next actions that would settle it. An honest partial answer is a correct answer.`
@@ -90,6 +91,38 @@ func noToolMessage(step int, reason string) string {
 	return fmt.Sprintf("Step %d was not usable: %s. That step number is now spent. "+
 		"Every step must call exactly one of the tools you were given, with arguments "+
 		"that match its schema. Call one now.", step, reason)
+}
+
+// budgetMessage tells the model where it is against its bounds.
+//
+// It exists because the prompt asked the model to "finish before your budget
+// runs out" while never stating the budget: the only number in the context was
+// a step label counting up with no ceiling. In a twenty-four run evaluation not
+// one run called finish on its own — every one was cut off — which is the shape
+// of a model that cannot see the wall it is walking into.
+//
+// It says the tool-call rule out loud too. MaxToolCalls counts tool_calls rows
+// and search_knowledge writes none, so a model that tried to count its own
+// spending would get a different number than bound() does.
+//
+// step is the step about to be taken, which is one past the last completed one.
+func budgetMessage(step, maxSteps, toolCalls, maxToolCalls int) string {
+	remaining := maxSteps - step
+	var urgency string
+	switch {
+	case remaining <= 0:
+		urgency = "This is your last step: call finish now."
+	case remaining == 1:
+		urgency = "One step remains after this one. Call finish now unless this step will settle it."
+	default:
+		urgency = fmt.Sprintf("%d steps remain after this one. "+
+			"Call finish as soon as you can name a root cause.", remaining)
+	}
+
+	return fmt.Sprintf("Budget: step %d of %d, and you have used %d of %d tool calls. "+
+		"Searching the knowledge base does not count toward the tool-call budget; "+
+		"every other tool does. %s",
+		step, maxSteps, toolCalls, maxToolCalls, urgency)
 }
 
 // forcedFinishMessage explains why the model is being cut off.
@@ -158,7 +191,7 @@ var finishTool = llmToolDef(ToolFinish,
     },
     "affected_service": {
       "type": "string",
-      "description": "The service the root cause is in, which is not always the service the incident was filed against."
+      "description": "One service name and nothing else, such as payment-service. It is not always the service the incident was filed against. Any qualification belongs in root_cause."
     },
     "next_actions": {
       "type": "array",

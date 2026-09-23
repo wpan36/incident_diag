@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/wpan36/incident_diag/internal/lab"
 )
 
 // Services, as a fault call names them.
@@ -18,6 +20,15 @@ const (
 	targetCheckout = "checkout-service"
 	targetPayment  = "payment-service"
 )
+
+// paymentCPUWorkers is what the payment-cpu scenario spins.
+//
+// It is the lab's maximum rather than DefaultParams().Workers because
+// payment-service is hard to starve: it is limited to one CPU, Go derives
+// GOMAXPROCS from that, and its handler mostly waits on the simulated
+// processor. Two spinners leave it answering in 87ms — no incident at all,
+// which is what an evaluation run measured and correctly reported.
+const paymentCPUWorkers = lab.MaxCPUWorkers
 
 // Params are the fault settings a scenario builds its request from. They are
 // flags because the values that reproduce a shape depend on the machine.
@@ -104,6 +115,77 @@ func All() []Scenario {
 			Fault: func(p Params) faultCall {
 				return faultCall{target: targetCheckout, body: map[string]any{
 					"kind": "cpu", "enabled": true, "workers": p.Workers,
+				}}
+			},
+		},
+		{
+			Name:    "checkout-latency",
+			Summary: "checkout-service is slow in its own handler, with payment-service healthy",
+			Expect: "checkout-service's p99 rises on every route including GET /orders/:id, which calls " +
+				"nothing downstream, while payment-service's own p99 and its pool stay flat and no " +
+				"checkout_payment_client_timeouts_total appear. The discriminator against checkout-cpu is " +
+				"that process_cpu_seconds_total{job=\"checkout-service\"} does not rise: checkout is waiting, " +
+				"not working",
+			Runbook: "checkout-latency-runbook.md",
+			Fault: func(p Params) faultCall {
+				return faultCall{target: targetCheckout, body: map[string]any{
+					"kind": "latency", "enabled": true,
+					"delay_ms": p.DelayMS, "jitter_ms": p.JitterMS,
+				}}
+			},
+		},
+		{
+			Name:    "payment-cpu",
+			Summary: "payment-service saturates its own CPU",
+			Expect: "payment-service is slow and checkout-service answers 504, which looks exactly like " +
+				"payment-latency from checkout's side. The discriminator is inside payment-service: " +
+				"payment_processor_latency_seconds stays flat — the card processor is fine — while " +
+				"rate(process_cpu_seconds_total{job=\"payment-service\"}[1m]) rises",
+			Runbook: "cpu-saturation-runbook.md, then payment-latency-runbook.md for what it is not",
+			Fault: func(Params) faultCall {
+				// Not Params.Workers, which is checkout's number. payment-service
+				// needs far more spinners to show the same shape, because its
+				// handler spends most of its time asleep inside the simulated
+				// processor call rather than computing: at two workers it stays
+				// under 100ms and there is no incident to find. checkout's
+				// handler serializes orders, which is real CPU work, so two is
+				// enough there.
+				return faultCall{target: targetPayment, body: map[string]any{
+					"kind": "cpu", "enabled": true, "workers": paymentCPUWorkers,
+				}}
+			},
+		},
+		{
+			Name:    "checkout-errors",
+			Summary: "checkout-service sheds a share of its own requests",
+			Expect: "checkout-service's 5xx rate matches the injected ratio while its latency stays flat " +
+				"and payment-service is untouched — no 502, no 504, no client timeouts. The fault is " +
+				"in the service the incident was filed against, which is the case the corpus warns is " +
+				"the least likely",
+			Runbook: "error-rate-runbook.md",
+			Fault: func(p Params) faultCall {
+				return faultCall{target: targetCheckout, body: map[string]any{
+					"kind": "error", "enabled": true,
+					"status": p.Status, "ratio": p.Ratio,
+				}}
+			},
+		},
+		{
+			Name:    "payment-latency-mild",
+			Summary: "payment-service is a little slower than usual, and nothing is actually failing",
+			Expect: "payment-service's p99 rises to a few hundred milliseconds — visible, but under its " +
+				"2s alert and far under checkout-service's 2s client timeout, so every request still " +
+				"succeeds. The right answer is that nothing is broken, which is what makes this the " +
+				"second negative case: a run that invents a root cause here is wrong in the way that " +
+				"matters most",
+			Runbook: "none — the right diagnosis is that the numbers are within budget",
+			Fault: func(Params) faultCall {
+				// Fixed rather than taken from Params: the whole point is a
+				// delay under both thresholds, and a scenario whose meaning
+				// depends on a flag would not be the negative case.
+				return faultCall{target: targetPayment, body: map[string]any{
+					"kind": "latency", "enabled": true,
+					"delay_ms": 300, "jitter_ms": 100,
 				}}
 			},
 		},

@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/wpan36/incident_diag/internal/config"
+	"github.com/wpan36/incident_diag/internal/obs"
 )
 
 // Version is reported to clients during initialization.
@@ -36,6 +37,7 @@ func New(cfg config.OpsMCP, logger *slog.Logger) *Server {
 	return &Server{
 		cfg: cfg,
 		http: &http.Client{
+			Transport: obs.Transport(nil),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -99,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	srv := s.MCP()
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv }, nil))
+	mux.Handle("/metrics", obs.MetricsHandler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

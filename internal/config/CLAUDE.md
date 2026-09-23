@@ -28,6 +28,9 @@ anything partly valid. The environment is the only source: Compose supplies `.en
 - `agentworker.go` — `AgentWorker` (run lease, attempt limit, tool server and its timeout,
   plus the derived worst case and rebalance timeout), `LoadAgentWorker`,
   `worstCaseRunDuration` and `RebalanceMargin`.
+- `metrics.go` — `Metrics` (the workers' listener address) and `LoadMetrics`.
+- `tracing.go` — `Tracing` (OTLP endpoint, service name) and `LoadTracing`; an unset
+  endpoint means tracing is off.
 - `llm.go` — `LLM` (chat endpoint, key, model, per-attempt timeout, retry budget) and
   `LoadLLM`. A separate provider from the embeddings one: DeepSeek has no embeddings
   endpoint.

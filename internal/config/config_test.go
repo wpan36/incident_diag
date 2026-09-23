@@ -991,3 +991,44 @@ func TestLoadAgentWorkerRequiresAToolServer(t *testing.T) {
 		t.Fatal("LoadAgentWorker accepted a tool server URL with no scheme")
 	}
 }
+
+func TestLoadTracingIsDisabledWithoutAnEndpoint(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_SERVICE_NAME", "")
+
+	c, err := LoadTracing("api")
+	if err != nil {
+		t.Fatalf("LoadTracing: %v", err)
+	}
+	// Unset is the switch, not an error: every test and every `go run` has to
+	// work without a collector.
+	if c.Endpoint != "" || c.Service != "api" {
+		t.Errorf("%+v", c)
+	}
+	if !strings.Contains(c.String(), "disabled") {
+		t.Errorf("String() = %q", c.String())
+	}
+}
+
+func TestLoadTracingRejectsANonURLEndpoint(t *testing.T) {
+	t.Setenv("OTEL_SERVICE_NAME", "")
+	for _, bad := range []string{"jaeger:4318", "ftp://x", "http://"} {
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", bad)
+		if _, err := LoadTracing("api"); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}
+
+func TestLoadTracingHonoursTheStandardServiceNameOverride(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4318")
+	t.Setenv("OTEL_SERVICE_NAME", "renamed")
+
+	c, err := LoadTracing("api")
+	if err != nil {
+		t.Fatalf("LoadTracing: %v", err)
+	}
+	if c.Service != "renamed" {
+		t.Errorf("service = %q, want the OTEL_SERVICE_NAME override", c.Service)
+	}
+}

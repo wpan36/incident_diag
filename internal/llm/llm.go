@@ -26,8 +26,17 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/wpan36/incident_diag/internal/config"
+	"github.com/wpan36/incident_diag/internal/obs"
 )
+
+// tracer is resolved through the global provider on every span, so holding it
+// here does not depend on obs.Setup having run first.
+var tracer = obs.Tracer("llm")
 
 // Message roles, as the wire format spells them.
 const (
@@ -159,12 +168,38 @@ type Client struct {
 // New builds a client. The HTTP client has no timeout of its own: LLM_TIMEOUT
 // is applied per attempt through the context, so a retry gets a fresh one.
 func New(cfg config.LLM, logger *slog.Logger) *Client {
-	return &Client{cfg: cfg, http: &http.Client{}, logger: logger}
+	return &Client{cfg: cfg, http: &http.Client{Transport: obs.Transport(nil)}, logger: logger}
 }
 
 // Chat sends one completion, retrying transient failures until the budget is
 // spent.
+//
+// The span covers every attempt; otelhttp adds one child per attempt, so a
+// slow call shows whether it was one slow request or three.
 func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
+	ctx, span := tracer.Start(ctx, "llm.chat",
+		trace.WithAttributes(obs.AttrModel.String(c.cfg.Model)))
+	defer span.End()
+
+	started := time.Now()
+	resp, err := c.chat(ctx, req)
+	obs.LLMRequestDuration.WithLabelValues(obs.OutcomeOf(err)).Observe(time.Since(started).Seconds())
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "the chat completion failed")
+		return Response{}, err
+	}
+	obs.LLMTokens.WithLabelValues(obs.TokensPrompt).Add(float64(resp.Usage.PromptTokens))
+	obs.LLMTokens.WithLabelValues(obs.TokensCompletion).Add(float64(resp.Usage.CompletionTokens))
+	span.SetAttributes(
+		attribute.Int("incident_diag.prompt_tokens", resp.Usage.PromptTokens),
+		attribute.Int("incident_diag.completion_tokens", resp.Usage.CompletionTokens),
+		attribute.String("incident_diag.finish_reason", resp.FinishReason),
+	)
+	return resp, nil
+}
+
+func (c *Client) chat(ctx context.Context, req Request) (Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {

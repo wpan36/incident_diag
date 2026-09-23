@@ -14,10 +14,14 @@ one chunk labelled relevant.** It is not the proportion of all relevant chunks r
 Both are called recall in the literature, and reporting one under a name that also means the
 other is how a number ends up compared against a number it is not comparable with.
 
-## Baseline — 2026-09-21
+## Baseline — 2026-09-23
 
 Dense retrieval only: kNN over `BAAI/bge-m3` embeddings, cosine similarity, no filters
-applied. 10 documents, 24 chunks, 16 queries.
+applied. 11 documents, 30 chunks, 16 queries.
+
+Re-measured after the corpus gained a runbook for latency with no obvious cause and the
+payment latency runbook gained a CPU section. **Every number is unchanged**, including
+which three queries are answered second — six more chunks did not displace anything.
 
 | Metric | Value |
 | --- | --- |
@@ -28,7 +32,7 @@ applied. 10 documents, 24 chunks, 16 queries.
 
 ### Only Recall@1 carries information
 
-Recall@3 and Recall@5 are saturated. With 24 chunks, asking for five of them and requiring
+Recall@3 and Recall@5 are saturated. With 30 chunks, asking for five of them and requiring
 one to be relevant is not a demanding test, and a future change to retrieval will move
 neither number. **Recall@1 is the number to compare against.**
 

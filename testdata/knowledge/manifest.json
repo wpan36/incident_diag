@@ -7,6 +7,7 @@
     { "source": "connection-pool-runbook.md", "service": null, "document_type": "runbook" },
     { "source": "cpu-saturation-runbook.md", "service": null, "document_type": "runbook" },
     { "source": "error-rate-runbook.md", "service": null, "document_type": "runbook" },
+    { "source": "unexplained-latency-runbook.md", "service": null, "document_type": "runbook" },
     { "source": "postmortem-2026-03-payment-pool.md", "service": "payment-service", "document_type": "postmortem" },
     { "source": "postmortem-2026-05-checkout-timeout.md", "service": "checkout-service", "document_type": "postmortem" },
     { "source": "postmortem-2026-07-cpu-regression.md", "service": "payment-service", "document_type": "postmortem" }

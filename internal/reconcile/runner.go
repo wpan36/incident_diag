@@ -7,6 +7,7 @@ import (
 
 	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/mq"
+	"github.com/wpan36/incident_diag/internal/obs"
 	"github.com/wpan36/incident_diag/internal/store"
 )
 
@@ -202,11 +203,13 @@ func (r *Runner) Sweep(ctx context.Context) (Stats, error) {
 			// Nothing was written, so the row still matches next time. Keep
 			// going: one unreachable partition should not stop the rest.
 			stats.Failed++
+			obs.ReconcileProduceFailures.WithLabelValues(r.target.noun).Inc()
 			r.logger.ErrorContext(ctx, "re-enqueue failed",
 				idKey, c.ID, "category", category, "error", err)
 			continue
 		}
 		stats.Enqueued[category]++
+		obs.ReconcileEnqueued.WithLabelValues(r.target.noun, string(category)).Inc()
 		r.logger.DebugContext(ctx, "re-enqueued row",
 			idKey, c.ID, "category", category, "attempts", c.Attempts)
 	}

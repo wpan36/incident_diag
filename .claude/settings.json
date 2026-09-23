@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(gofmt -l internal/agent)",
+      "Bash(gofmt -l internal/opsmcp)",
+      "Bash(go build *)",
+      "Bash(gofmt -l internal/e2e)"
     ]
   }
 }

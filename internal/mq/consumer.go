@@ -7,8 +7,12 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/plugin/kotel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/wpan36/incident_diag/internal/config"
+	"github.com/wpan36/incident_diag/internal/obs"
 )
 
 // Record is one consumed message, in terms this project uses rather than
@@ -39,6 +43,7 @@ type Consumer struct {
 	cl     *kgo.Client
 	group  string
 	logger *slog.Logger
+	tracer *kotel.Tracer
 }
 
 // ConsumerOption adjusts a consumer at construction.
@@ -73,8 +78,12 @@ func NewConsumer(cfg config.Kafka, group string, topics []string, logger *slog.L
 		opt(&o)
 	}
 
+	// kotel reads the trace context out of the record headers the producer
+	// wrote, so a handler's spans continue the trace that enqueued the message.
+	tracer := kotel.NewTracer(kotel.ConsumerGroup(group))
 	kopts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
+		kgo.WithHooks(kotel.NewKotel(kotel.WithTracer(tracer)).Hooks()...),
 		kgo.ConsumerGroup(group),
 		kgo.ConsumeTopics(topics...),
 		// Offsets are committed by hand, one record at a time, in handle.
@@ -99,7 +108,7 @@ func NewConsumer(cfg config.Kafka, group string, topics []string, logger *slog.L
 	if err != nil {
 		return nil, fmt.Errorf("mq: open consumer: %w", err)
 	}
-	return &Consumer{cl: cl, group: group, logger: logger}, nil
+	return &Consumer{cl: cl, group: group, logger: logger, tracer: tracer}, nil
 }
 
 // Run polls and dispatches until ctx is cancelled or the client is closed.
@@ -154,7 +163,22 @@ func (c *Consumer) Run(ctx context.Context, h Handler) error {
 // message into a stalled partition. So the outcome is recorded in MySQL — where
 // it is either terminal or reconcilable — and the offset moves on.
 func (c *Consumer) handle(ctx context.Context, h Handler, r *kgo.Record) {
-	if err := h(ctx, toRecord(r)); err != nil {
+	// The process span hangs off the producer's span, but the context it comes
+	// in is the record's, which carries no cancellation. The handler is given
+	// the poll context with that span attached instead, so shutdown still
+	// reaches it.
+	recCtx, span := c.tracer.WithProcessSpan(r)
+	ctx = trace.ContextWithSpan(ctx, trace.SpanFromContext(recCtx))
+	defer span.End()
+
+	started := time.Now()
+	err := h(ctx, toRecord(r))
+	obs.KafkaProcessingDuration.WithLabelValues(r.Topic, obs.OutcomeOf(err)).
+		Observe(time.Since(started).Seconds())
+
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "handler failed")
 		c.logger.ErrorContext(ctx, "handler failed",
 			"topic", r.Topic, "partition", r.Partition, "offset", r.Offset,
 			"key", string(r.Key), "error", err)

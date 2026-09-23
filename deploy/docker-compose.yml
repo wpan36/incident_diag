@@ -218,6 +218,20 @@ services:
         limits:
           cpus: "1.0"
 
+  # Traces, in the lab profile for the reason Prometheus and Grafana are: it is
+  # something to look at during a demo, not something the integration tests
+  # need. Memory storage, so a restart loses every trace — correct for a lab.
+  jaeger:
+    profiles: [lab]
+    image: jaegertracing/all-in-one:1.72.0
+    container_name: jaeger
+    restart: unless-stopped
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      # OTLP over HTTP. The binaries export straight here; there is no
+      # collector in between, which is one less thing to configure.
+      - "${JAEGER_OTLP_PORT:-4318}:4318"
+
   prometheus:
     profiles: [lab]
     image: prom/prometheus:v3.6.0
@@ -228,6 +242,16 @@ services:
       - --storage.tsdb.path=/prometheus
       # A lab run is minutes long and the disk is a laptop's.
       - --storage.tsdb.retention.time=7d
+      # So that the agent evaluation can wipe the metric history between
+      # scenarios. Without it, scenario N sees scenario N-1's fault — the agent
+      # looks back over an hour, and an hour ago the lab was broken on purpose
+      # for a different reason. There is nothing to protect here: this
+      # Prometheus only ever holds the lab's own numbers.
+      - --web.enable-admin-api
+    # So that the scrape jobs for cmd/api and the two workers, which run on the
+    # host rather than in a container, resolve.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
@@ -256,6 +280,7 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     volumes:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - prometheus
@@ -309,6 +334,9 @@ services:
       OPS_MCP_PROBE_TARGETS: checkout-service=http://checkout-service:8080,payment-service=http://payment-service:8080
       OPS_MCP_LOG_ROOT: /var/log/lab
       OPS_MCP_LOG_SERVICES: checkout-service,payment-service
+      # Container name, not the host port: this exports across the compose
+      # network. The binaries run on the host use localhost instead.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OPS_MCP_OTEL_ENDPOINT:-http://jaeger:4318}
     ports:
       - "${OPS_MCP_PORT:-8084}:8080"
     volumes:
@@ -319,6 +347,7 @@ services:
       - prometheus
       - checkout-service
       - payment-service
+      - jaeger
 
 volumes:
   mysql-data:

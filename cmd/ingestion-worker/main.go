@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/ingest"
 	"github.com/wpan36/incident_diag/internal/log"
 	"github.com/wpan36/incident_diag/internal/mq"
+	"github.com/wpan36/incident_diag/internal/obs"
 	"github.com/wpan36/incident_diag/internal/reconcile"
 	"github.com/wpan36/incident_diag/internal/search"
 	"github.com/wpan36/incident_diag/internal/shutdown"
@@ -58,6 +60,13 @@ const (
 	goroutineTimeout = 5 * time.Second
 )
 
+// serviceName identifies this binary in traces and metrics.
+const serviceName = "ingestion-worker"
+
+// defaultMetricsAddr is this worker's own listener. The two workers run side
+// by side on a developer's machine, so they cannot share a default.
+const defaultMetricsAddr = ":8085"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -75,19 +84,31 @@ func run() error {
 	docCfg, docErr := config.LoadDocuments()
 	embedCfg, embedErr := config.LoadEmbedding()
 	searchCfg, searchErr := config.LoadSearch()
-	if err := errors.Join(cfgErr, dbErr, kafkaErr, recErr, docErr, embedErr, searchErr); err != nil {
+	traceCfg, traceErr := config.LoadTracing(serviceName)
+	metricsCfg, metricsErr := config.LoadMetrics(defaultMetricsAddr)
+	if err := errors.Join(cfgErr, dbErr, kafkaErr, recErr, docErr, embedErr, searchErr,
+		traceErr, metricsErr); err != nil {
 		return err
 	}
 
-	logger := log.New(os.Stdout, cfg.LogLevel, "ingestion-worker")
+	logger := log.New(os.Stdout, cfg.LogLevel, serviceName)
 	logger.Info("starting ingestion worker", "config", cfg.String(), "database", dbCfg.String(),
 		"kafka", kafkaCfg.String(), "reconcile", recCfg.String(), "documents", docCfg.String(),
-		"embedding", embedCfg.String(), "search", searchCfg.String())
+		"embedding", embedCfg.String(), "search", searchCfg.String(),
+		"tracing", traceCfg.String(), "metrics", metricsCfg.String())
 
 	ctx, stop := shutdown.Context(context.Background())
 	defer stop()
 
 	var closers shutdown.Group
+
+	// Registered first so it shuts down last, giving the spans of everything
+	// above it somewhere to go.
+	flushTraces, err := obs.Setup(ctx, obs.Config{Endpoint: traceCfg.Endpoint, Service: traceCfg.Service}, logger)
+	if err != nil {
+		return err
+	}
+	closers.Add("tracing", flushTraces)
 
 	connectCtx, cancelConnect := context.WithTimeout(ctx, connectTimeout)
 	defer cancelConnect()
@@ -160,7 +181,24 @@ func run() error {
 	defer cancelRun()
 
 	var wg sync.WaitGroup
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
+
+	// The only thing this process serves. It is started alongside the workers
+	// so that a port already in use is a failure that stops the worker rather
+	// than a metrics endpoint nobody notices is missing.
+	metricsSrv := obs.NewMetricsServer(metricsCfg.Addr)
+	closers.Add("metrics server", metricsSrv.Shutdown)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		logger.Info("serving metrics", "addr", metricsSrv.Addr)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- err
+			return
+		}
+		errs <- nil
+	}()
 
 	wg.Add(1)
 	go func() {

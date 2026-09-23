@@ -26,8 +26,16 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/wpan36/incident_diag/internal/config"
+	"github.com/wpan36/incident_diag/internal/obs"
 )
+
+// tracer is resolved through the global provider on every span, so holding it
+// here does not depend on obs.Setup having run first.
+var tracer = obs.Tracer("embed")
 
 // Dimensions is the vector length this system indexes, and the length
 // BAAI/bge-m3 produces.
@@ -96,7 +104,7 @@ type Client struct {
 // New builds a client. The HTTP client has no timeout of its own: the deadline
 // is applied per attempt through the context, so that a retry gets a fresh one.
 func New(cfg config.Embedding, logger *slog.Logger) *Client {
-	return &Client{cfg: cfg, http: &http.Client{}, logger: logger}
+	return &Client{cfg: cfg, http: &http.Client{Transport: obs.Transport(nil)}, logger: logger}
 }
 
 // Embed returns one vector per text, in the order the texts were given.
@@ -108,6 +116,13 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	if len(texts) == 0 {
 		return nil, nil
 	}
+
+	ctx, span := tracer.Start(ctx, "embed.texts",
+		trace.WithAttributes(attribute.Int("incident_diag.texts", len(texts))))
+	defer span.End()
+
+	started := time.Now()
+	defer func() { obs.EmbeddingDuration.Observe(time.Since(started).Seconds()) }()
 
 	out := make([][]float32, 0, len(texts))
 	for start := 0; start < len(texts); start += c.cfg.BatchSize {

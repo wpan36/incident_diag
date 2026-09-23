@@ -318,3 +318,70 @@ func TestPrometheusQueryRefusesAPromQLErrorButNotAMisconfiguredEndpoint(t *testi
 		}
 	}
 }
+
+// A refusal has to answer the question the query was asking.
+//
+// The agent queries {job="x"} or count by (__name__) (...) precisely because it
+// does not know the metric names, so "narrow it with a label matcher or an
+// aggregation" is advice it cannot take — those already are aggregations. In
+// one evaluation 35 of 240 tool calls went on this loop.
+func TestOverCapRefusalNamesTheMetricsItMatched(t *testing.T) {
+	series := []promSeries{
+		{Metric: map[string]string{"__name__": "payment_pool_in_use"}},
+		{Metric: map[string]string{"__name__": "process_cpu_seconds_total", "job": "payment-service"}},
+		{Metric: map[string]string{"__name__": "payment_pool_in_use", "instance": "b"}},
+		// An aggregation that dropped __name__ contributes nothing rather than
+		// an entry that reads as a metric called "".
+		{Metric: map[string]string{"job": "payment-service"}},
+	}
+
+	note := overCapNote(57, 50, series)
+
+	for _, want := range []string{
+		"matched 57 series", "at most 50",
+		"payment_pool_in_use", "process_cpu_seconds_total",
+		"It matched 2 metrics",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the refusal does not contain %q:\n%s", want, note)
+		}
+	}
+	// Distinct and sorted, so the same query twice reads the same way.
+	if strings.Count(note, "payment_pool_in_use") != 1 {
+		t.Errorf("a metric was listed twice:\n%s", note)
+	}
+	if i, j := strings.Index(note, "payment_pool_in_use"), strings.Index(note, "process_cpu_seconds_total"); i > j {
+		t.Errorf("the metric list is not sorted:\n%s", note)
+	}
+}
+
+func TestOverCapRefusalBoundsTheList(t *testing.T) {
+	series := make([]promSeries, 0, 200)
+	for i := 0; i < 200; i++ {
+		series = append(series, promSeries{
+			Metric: map[string]string{"__name__": fmt.Sprintf("metric_%03d", i)},
+		})
+	}
+
+	note := overCapNote(200, 50, series)
+
+	if got := strings.Count(note, "metric_"); got != maxNamedMetrics {
+		t.Errorf("listed %d metrics, want the %d cap", got, maxNamedMetrics)
+	}
+	if !strings.Contains(note, "and 120 more") {
+		t.Errorf("the refusal does not say how many it left out:\n%s", note)
+	}
+}
+
+// A query that matched only unnamed series — every aggregation that drops
+// __name__ — still has to refuse usefully rather than claim zero metrics.
+func TestOverCapRefusalWithNoNamesFallsBack(t *testing.T) {
+	note := overCapNote(60, 50, []promSeries{{Metric: map[string]string{"job": "x"}}})
+
+	if strings.Contains(note, "It matched 0 metrics") {
+		t.Errorf("the refusal claims no metrics:\n%s", note)
+	}
+	if !strings.Contains(note, "Narrow it") {
+		t.Errorf("the refusal gives no advice:\n%s", note)
+	}
+}

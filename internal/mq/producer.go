@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/plugin/kotel"
 
 	"github.com/wpan36/incident_diag/internal/config"
 )
@@ -32,8 +33,14 @@ type Client struct {
 // silent second queue nothing consumes, and it would create it with one
 // partition rather than three.
 func NewProducer(cfg config.Kafka) (*Client, error) {
+	// kotel writes the trace context into the record headers, which is what
+	// makes the API request that enqueued a run and the worker that executed it
+	// one trace instead of two.
+	tracing := kotel.NewKotel(kotel.WithTracer(kotel.NewTracer()))
+
 	cl, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
+		kgo.WithHooks(tracing.Hooks()...),
 		// acks=all: an acknowledgement means every in-sync replica has the
 		// record. On a single broker that is one replica, but the setting is
 		// what makes the acknowledgement mean anything at all.

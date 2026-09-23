@@ -15,10 +15,10 @@ database, no broker and no provider.
 - `agent.go` — the vocabulary: `Run`, `Incident`, `Budget`, `Action`, `Observation`,
   `Step`, `StepRef`, `ToolCall`, `Evidence`, `Citation`, `FinalResult`, the `ReportStep`
   callback, and the `ToolServer` and `ChunkSearcher` interfaces.
-- `prompt.go` — `SystemPrompt`, the incident, observation, no-tool and forced-finish
-  messages, and the JSON Schemas for `search_knowledge` and `finish`.
+- `prompt.go` — `SystemPrompt`, the incident, observation, no-tool, budget and
+  forced-finish messages, and the JSON Schemas for `search_knowledge` and `finish`.
 - `knowledge.go` — `Knowledge`, the in-process `search_knowledge`, and the hit rendering.
-- `context.go` — `Turn`, `ContextBuilder` and `EstimateTokens`.
+- `context.go` — `Turn`, `Spent`, `ContextBuilder` and `EstimateTokens`.
 - `tools.go` — `Deps`, `Agent`, `New`, the one tool list from three sources, and the MCP
   call to `tool_calls.status` mapping.
 - `loop.go` — `Run`, the bounds, the prose retry, the forced finish and the step reporting.
@@ -38,6 +38,17 @@ supplies the callback that writes rows and publishes events, and calls `FinishRu
 outcome.
 
 ## Gotchas
+
+**`agent.run` is the root of a trace**, with one child per step. Only one test in this
+package may install a tracer provider — the global provider delegates once; see
+`trace_test.go`.
+
+**The budget line is always the last message in the context**, so a test asserting on "the
+last message" wants `len(msgs)-2`. It exists because the prompt told the model to finish
+before its budget ran out while never stating the budget: across M32's twenty-four runs,
+not one called `finish` on its own. It also says out loud that `search_knowledge` does not
+count toward `MaxToolCalls`, which a model cannot infer.
+
 
 - **`Run` returns an error only for cancellation, and then nothing terminal must be
   written.** The run stays `RUNNING`, its Kafka offset uncommitted, and the lease restarts

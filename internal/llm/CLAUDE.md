@@ -15,18 +15,21 @@ the tool schemas, so there is no parser here for JSON the model wrote in prose.
   `TextTurn` and `NewToolCall`; `ErrScriptExhausted`.
 - `llm_test.go` — unit tests against `httptest`, including retry classification and a
   provider that reports no usage.
+- `provider_integration_test.go` — M33: a second OpenAI-compatible provider makes a real
+  tool call, skipping unless `TEST_ALT_LLM_BASE_URL` is set.
 
 ## How it fits in
 
 `internal/agent` depends on `Chatter` and nothing else here. `config.LoadLLM` supplies the
-endpoint, key and model, and switching provider is those three variables — M33's smoke
-test is what proves it.
+endpoint, key and model, and switching provider is those three variables — which
+`provider_integration_test.go` checks against SiliconFlow's Qwen3-8B, by making it call a
+tool rather than by checking that the endpoint answers.
 
 ## Gotchas
 
 - **No streaming.** The diagnosis arrives as the arguments of a `finish` tool call, not as
-  assistant content, so streaming it means streaming tool-call argument deltas. M27 or S9
-  decides how; nothing before then consumes it.
+  assistant content, so streaming it means streaming tool-call argument deltas. That was
+  M27, and it was cancelled — see [ADR 0010](../../docs/adr/0010-no-answer-delta.md).
 - **`Arguments` is a string holding JSON**, because that is what the wire format carries.
   It is passed through unchanged so a provider's formatting cannot change what the audit
   trail records; the agent validates it before it reaches a JSON column.

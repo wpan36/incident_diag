@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/embed"
@@ -23,6 +24,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/httpx"
 	"github.com/wpan36/incident_diag/internal/id"
 	"github.com/wpan36/incident_diag/internal/mq"
+	"github.com/wpan36/incident_diag/internal/obs"
 	"github.com/wpan36/incident_diag/internal/search"
 	"github.com/wpan36/incident_diag/internal/store"
 	"github.com/wpan36/incident_diag/web"
@@ -72,6 +74,10 @@ type Deps struct {
 	Events      config.Events
 	LLMModel    string
 	Logger      *slog.Logger
+
+	// Service names this binary in a trace. Empty is fine: otelgin falls back
+	// to its own default, and the tests do not care.
+	Service string
 }
 
 // runReader is the part of the store the SSE endpoint reads a run through.
@@ -101,10 +107,14 @@ func NewServer(deps Deps) *Server { return &Server{deps: deps, runs: deps.Store}
 func (s *Server) Router() http.Handler {
 	r := gin.New()
 
-	// Order matters. requestID runs first so everything after it — including
-	// the log record and the error envelope — can see the identifier; recovery
-	// sits inside the logger so a panic still produces a request record.
-	r.Use(requestID(), requestLogger(s.deps.Logger), recovery(s.deps.Logger))
+	// Order matters. otelgin is outermost so the span is open before anything
+	// else runs, and it names spans after the route template rather than the
+	// path — one id per incident would otherwise become one span name per
+	// incident. requestID runs next so everything after it, including the log
+	// record and the error envelope, can see the identifier; recovery sits
+	// inside the logger so a panic still produces a request record.
+	r.Use(otelgin.Middleware(s.deps.Service, otelgin.WithFilter(obs.TraceRequest)),
+		requestID(), requestLogger(s.deps.Logger), recovery(s.deps.Logger))
 
 	r.NoRoute(func(c *gin.Context) {
 		renderError(c, httpx.NotFound("no such endpoint"))
@@ -122,6 +132,9 @@ func (s *Server) Router() http.Handler {
 
 	r.GET("/healthz", s.healthz)
 	r.GET("/readyz", s.readyz)
+	// On the router the API already has, rather than on a second listener the
+	// way the workers need: this process is already serving.
+	r.GET("/metrics", gin.WrapH(obs.MetricsHandler()))
 
 	api := r.Group("/api")
 	{

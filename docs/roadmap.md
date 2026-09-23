@@ -1,7 +1,9 @@
 # Roadmap
 
-32 implementation milestones across 7 phases, plus 7 Tier A specs. See
+32 implementation milestones across 7 phases, plus 7 Tier A specs — **all done**. See
 `docs/workflow.md` for what Tier A and Tier B mean and how each milestone is executed.
+The project's own measurements are [`docs/agent-eval.md`](agent-eval.md) and
+[`docs/rag-eval.md`](rag-eval.md).
 
 **Status legend:** `done` · `in progress` · `todo`
 
@@ -102,11 +104,11 @@ Specified by S6, which is written at the top of Phase C.
 
 | | Milestone | Status |
 | --- | --- | --- |
-| M29 | OpenTelemetry across the API, Kafka produce/consume with context propagation, retrieval, embedding, LLM, MCP calls and agent runs — one run, one trace (Tier B) | todo |
-| M30 | Prometheus metrics and two Grafana dashboards: agent run health and pipeline health (Tier B) | todo |
-| M31 | End-to-end test: inject a fault, file an incident, run the agent, assert it used retrieval and tools and named the right service (Tier B) | todo |
-| M32 | Agent evaluation (Tier B): run the agent against every injectable fault scenario and report diagnosis accuracy, steps, tool calls, token cost and latency percentiles in `docs/agent-eval.md`. Includes scenarios the agent should fail to diagnose, so the numbers mean something | todo |
-| M33 | Provider-switch smoke test against a second hosted OpenAI-compatible provider; finish `docs/architecture.md`, demo script, screenshots, README | todo |
+| M29 | OpenTelemetry across the API, Kafka produce/consume with context propagation, retrieval, embedding, LLM, MCP calls and agent runs — one run, one trace (Tier B) | done |
+| M30 | Prometheus metrics and two Grafana dashboards: agent run health and pipeline health (Tier B) | done |
+| M31 | End-to-end test: inject a fault, file an incident, run the agent, assert it used retrieval and tools and named the right service (Tier B) | done |
+| M32 | Agent evaluation (Tier B): run the agent against every injectable fault scenario and report diagnosis accuracy, steps, tool calls, token cost and latency percentiles in `docs/agent-eval.md`. Includes scenarios the agent should fail to diagnose, so the numbers mean something | done |
+| M33 | Provider-switch smoke test against a second hosted OpenAI-compatible provider; finish `docs/architecture.md`, demo script, screenshots, README | done |
 
 **M32's spec is written after M31 has run**, not before: which scenarios discriminate is a
 question about how the agent actually behaves, and the scenario set is the expensive part to

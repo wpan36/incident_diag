@@ -23,8 +23,8 @@ closed port would be a worse failure than no tracing at all.
 
 | Boundary | How |
 | --- | --- |
-| HTTP server | `otelgin` middleware in `internal/api` and `cmd/ops-mcp` |
-| HTTP client | `otelhttp.NewTransport` on the embedding, Prometheus, probe and MCP clients |
+| HTTP server | `otelgin` middleware in `internal/api`; `obs.Handler` in `cmd/ops-mcp`, which serves one handler and has no router |
+| HTTP client | `obs.Transport` (`otelhttp`) on every outgoing client: embedding, LLM, Prometheus, probe and MCP |
 | Kafka | `kotel`, franz-go's own plugin, which writes and reads the trace context in record headers |
 | LLM, MCP tool, retrieval, embedding, agent step | spans created by hand where the call is made |
 

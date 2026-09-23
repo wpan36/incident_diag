@@ -157,6 +157,27 @@ SCENARIO ?= list
 scenario:
 	$(GO) run ./cmd/lab-scenario $(SCENARIO)
 
+# The agent evaluation (M32). It needs `make up-lab`, a TEST_LLM_API_KEY, and
+# both workers stopped — it joins their consumer groups. Every run is billed.
+#
+# make agent-eval
+# make agent-eval EVAL="-runs 1 -only baseline"
+EVAL ?=
+
+.PHONY: agent-eval
+agent-eval:
+	@if [ -z "$$TEST_LLM_API_KEY" ]; then \
+		echo "TEST_LLM_API_KEY is not set; the evaluation would have nothing to run."; \
+		exit 1; \
+	fi
+	$(GO) run ./cmd/agent-eval $(EVAL)
+
+# The demo: upload the corpus, break the lab, file an incident, follow the run.
+# It needs `make up-lab` and the three binaries running — see the README.
+.PHONY: demo
+demo:
+	./scripts/demo.sh
+
 # ---- Migrations ------------------------------------------------------------
 
 .PHONY: migrate-up

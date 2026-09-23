@@ -27,3 +27,23 @@ scrape_configs:
   - job_name: cadvisor
     static_configs:
       - targets: ["cadvisor:8080"]
+
+  # The platform itself. ops-mcp is a container; cmd/api and the two workers run
+  # on the host during development, which is what host.docker.internal is for —
+  # the prometheus service maps it to the host gateway. A target that is down is
+  # a binary that is not running, which is worth seeing rather than hiding.
+  - job_name: api
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+
+  - job_name: ingestion-worker
+    static_configs:
+      - targets: ["host.docker.internal:8085"]
+
+  - job_name: agent-worker
+    static_configs:
+      - targets: ["host.docker.internal:8086"]
+
+  - job_name: ops-mcp
+    static_configs:
+      - targets: ["ops-mcp:8080"]

@@ -11,8 +11,11 @@ idempotent topic creation.
   `DefaultTopics`.
 - `message.go` — `Envelope`, the `Message` interface, `DocumentMessage`, `RunMessage`,
   `Encode`, the generic `Decode`, and the two decoding errors.
-- `producer.go` — the `Producer` interface and its franz-go `Client`.
+- `producer.go` — the `Producer` interface and its franz-go `Client`. `kotel` hooks write
+  the trace context into the record headers.
 - `consumer.go` — `Record`, `Handler`, `Consumer` with `Run`, and `WithRebalanceTimeout`.
+  `handle` opens the process span, then hands the handler the *poll* context with that span
+  attached, because the record's own context carries no cancellation.
 - `topics.go` — `EnsureTopics` and the metadata wait.
 - `fake.go` — `FakeProducer`, which records what would have been produced.
 - `message_test.go` — unit tests. `integration_test.go` — real broker.

@@ -14,9 +14,13 @@ import (
 
 	"github.com/wpan36/incident_diag/internal/config"
 	"github.com/wpan36/incident_diag/internal/log"
+	"github.com/wpan36/incident_diag/internal/obs"
 	"github.com/wpan36/incident_diag/internal/opsmcp"
 	"github.com/wpan36/incident_diag/internal/shutdown"
 )
+
+// serviceName identifies this binary in traces and metrics.
+const serviceName = "ops-mcp"
 
 func main() {
 	if err := run(); err != nil {
@@ -31,18 +35,27 @@ func run() error {
 	cfg, cfgErr := config.Load()
 	httpCfg, httpErr := config.LoadHTTPServer()
 	toolCfg, toolErr := config.LoadOpsMCP()
-	if err := errors.Join(cfgErr, httpErr, toolErr); err != nil {
+	traceCfg, traceErr := config.LoadTracing(serviceName)
+	if err := errors.Join(cfgErr, httpErr, toolErr, traceErr); err != nil {
 		return err
 	}
 
-	logger := log.New(os.Stdout, cfg.LogLevel, "ops-mcp")
+	logger := log.New(os.Stdout, cfg.LogLevel, serviceName)
 	logger.Info("starting ops-mcp", "config", cfg.String(), "http", httpCfg.String(),
-		"tools", toolCfg.String())
+		"tools", toolCfg.String(), "tracing", traceCfg.String())
 
 	ctx, stop := shutdown.Context(context.Background())
 	defer stop()
 
 	var closers shutdown.Group
+
+	// Registered first so it shuts down last, giving the spans of everything
+	// above it somewhere to go.
+	flushTraces, err := obs.Setup(ctx, obs.Config{Endpoint: traceCfg.Endpoint, Service: traceCfg.Service}, logger)
+	if err != nil {
+		return err
+	}
+	closers.Add("tracing", flushTraces)
 
 	// Nothing is dialled at startup. Prometheus and the probe targets are
 	// reached per call, so a dependency that is down is a tool result the agent
@@ -50,7 +63,7 @@ func run() error {
 	// position cmd/api takes about Kafka.
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           opsmcp.New(toolCfg, logger).Handler(),
+		Handler:           obs.Handler(opsmcp.New(toolCfg, logger).Handler(), "mcp"),
 		ReadHeaderTimeout: httpCfg.ReadHeaderTimeout,
 		ReadTimeout:       httpCfg.ReadTimeout,
 		// No write timeout. MCP over streamable HTTP holds a response open for

@@ -46,6 +46,11 @@ Check payment-service's own p99 before anything else, because it changes which o
 diagnoses above applies. If it is elevated, this is not a checkout incident: follow the
 payment-service latency runbook and expect checkout to recover when it does.
 
+If neither service looks slow on its own metrics and checkout is still missing its
+objective, use the unexplained latency runbook. Demand and retry amplification, garbage
+collection and leaks all produce latency that the obvious dashboards do not explain, and
+the first of those is worth ruling out before anything is tuned.
+
 ## Remediation: the timeout
 
 Raise `CHECKOUT_PAYMENT_TIMEOUT` only after confirming payment-service is healthy.

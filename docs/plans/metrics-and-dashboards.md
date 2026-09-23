@@ -30,8 +30,16 @@ are not in that position.
 | `llm_tokens_total{kind}` | counter — cost is the question a budget invites |
 | `rag_retrieval_duration_seconds` | histogram |
 | `kafka_processing_duration_seconds{topic,outcome}` | histogram |
+| `rag_embedding_duration_seconds` | histogram |
+| `reconcile_enqueued_total{target,category}` | counter |
+| `reconcile_produce_failures_total{target}` | counter |
+
+The last three are not in the original list and were added because the Pipeline dashboard
+below names embedding latency and reconciler activity, which nothing else measured.
 
 `tool` is the tool name, which is a closed set from `ops-mcp`, so the label cannot explode.
+A name the model invented is recorded as `__unknown__` rather than as itself: the model
+chooses that string, and a label it controls is an unbounded one.
 `status` on tool calls includes `REFUSED`, which is what makes "how often does the agent call
 a tool wrongly" a query rather than a log search.
 
@@ -78,3 +86,8 @@ these are long-lived processes, not batch jobs.
 has real latency numbers.
 
 **No alerting.** ADR 0005 already rules out Alertmanager; the dashboards are for looking at.
+
+**Every binary exports every metric.** They are package-level variables on the default
+registry, so importing `internal/obs` for tracing registers the lot — `ops-mcp` publishes
+`agent_runs_total` as a permanent zero. Sums across targets stay correct and the alternative,
+a registry threaded through every constructor, is plumbing this system does not need.

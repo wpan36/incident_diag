@@ -1,9 +1,10 @@
-# The one datasource. Dashboards are M30: a placeholder built against the lab
-# alone would be rewritten there.
+# The one datasource. The dashboards reference it by the uid pinned here, so a
+# provisioned dashboard resolves without a datasource picker.
 apiVersion: 1
 
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090

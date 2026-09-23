@@ -7,10 +7,19 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/wpan36/incident_diag/internal/llm"
+	"github.com/wpan36/incident_diag/internal/obs"
 	"github.com/wpan36/incident_diag/internal/search"
 	"github.com/wpan36/incident_diag/internal/store"
 )
+
+// tracer is resolved through the global provider on every span, so holding it
+// here does not depend on obs.Setup having run first.
+var tracer = obs.Tracer("agent")
 
 // emptyArguments is what a tool call with no arguments records, so that
 // agent_steps.action and tool_calls.arguments are always valid JSON.
@@ -85,6 +94,15 @@ func (s *runState) failed(reason string) store.RunOutcome {
 // its tool calls is sent to finish even when its next action would have been a
 // retrieval, which costs no tool call. Making a bound depend on what the model
 // picks next would turn it into a gate and make it much harder to test.
+// spent describes the step about to be taken, for the budget line.
+//
+// stepNumber is the last completed step, so the one being decided is the next.
+// bound() has already refused to start a step past MaxSteps, so this is never
+// more than MaxSteps.
+func (s *runState) spent() Spent {
+	return Spent{Step: s.stepNumber + 1, ToolCalls: s.toolCalls}
+}
+
 func (s *runState) bound() (string, bool) {
 	switch {
 	case s.stepNumber >= s.run.Budget.MaxSteps:
@@ -107,11 +125,39 @@ func (s *runState) bound() (string, bool) {
 //
 // Every other ending, including a failure, comes back as an outcome the
 // caller writes with FinishRun.
-func (a *Agent) Run(ctx context.Context, run Run) (store.RunOutcome, error) {
+func (a *Agent) Run(ctx context.Context, run Run) (outcome store.RunOutcome, err error) {
+	// The root of one investigation's trace. Its parent is the Kafka process
+	// span, which kotel joined to the API request that enqueued the run, so
+	// "one run, one trace" holds across all four processes.
+	started := time.Now()
+	ctx, span := tracer.Start(ctx, "agent.run", trace.WithAttributes(
+		obs.AttrRunID.String(run.ID),
+		obs.AttrIncidentID.String(run.Incident.ID),
+	))
+	// Named returns so that every exit records how the run ended, including
+	// the cancellation that writes nothing terminal.
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "the run was cancelled")
+		} else {
+			span.SetAttributes(
+				obs.AttrStopReason.String(outcome.StopReason),
+				attribute.Int("incident_diag.steps", outcome.StepCount),
+				attribute.Int("incident_diag.tool_calls", outcome.ToolCallCount),
+			)
+			// Only a terminal run is counted. A cancelled one returns an error
+			// above and is restarted, so counting it would count it twice.
+			obs.AgentRuns.WithLabelValues(outcome.Status, outcome.StopReason).Inc()
+			obs.AgentRunDuration.Observe(time.Since(started).Seconds())
+		}
+		span.End()
+	}()
+
 	s := &runState{
 		run:     run,
-		builder: ContextBuilder{Incident: run.Incident},
-		start:   time.Now(),
+		builder: ContextBuilder{Incident: run.Incident, Budget: run.Budget},
+		start:   started,
 		records: map[int]record{},
 	}
 
@@ -124,7 +170,7 @@ func (a *Agent) Run(ctx context.Context, run Run) (store.RunOutcome, error) {
 			return a.forceFinish(ctx, s, reason)
 		}
 
-		messages := s.builder.Build(s.turns)
+		messages := s.builder.Build(s.turns, s.spent())
 		if EstimateTokens(messages) > run.Budget.MaxPromptTokens {
 			// A safety net rather than an operating bound: config.LoadAgent's
 			// invariant means a valid configuration cannot reach it.
@@ -147,6 +193,10 @@ func (a *Agent) step(ctx context.Context, s *runState, messages []llm.Message) (
 	started := time.Now()
 	s.stepNumber++
 
+	ctx, span := tracer.Start(ctx, "agent.step",
+		trace.WithAttributes(obs.AttrStepNumber.Int(s.stepNumber)))
+	defer span.End()
+
 	resp, err := a.deps.LLM.Chat(ctx, llm.Request{Messages: messages, Tools: a.definitions})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -161,6 +211,7 @@ func (a *Agent) step(ctx context.Context, s *runState, messages []llm.Message) (
 	s.completionTokens += resp.Usage.CompletionTokens
 
 	call, name, args, reason := a.decide(s, resp)
+	span.SetAttributes(obs.AttrToolName.String(name))
 	if reason != "" {
 		return a.noToolStep(ctx, s, started, reason)
 	}
@@ -347,7 +398,10 @@ func (a *Agent) forceFinish(ctx context.Context, s *runState, stopReason string)
 		return store.RunOutcome{}, err
 	}
 
-	messages := append(s.builder.Build(s.turns),
+	// The budget line is built too, and then the forced message follows it and
+	// contradicts nothing: by here the run is over, and forcedFinishMessage
+	// says which bound ended it.
+	messages := append(s.builder.Build(s.turns, s.spent()),
 		llm.Message{Role: llm.RoleUser, Content: forcedFinishMessage(stopReason)})
 
 	started := time.Now()
@@ -442,6 +496,8 @@ func (a *Agent) report(ctx context.Context, s *runState, step Step, rec record) 
 		}
 		return s.failed(fmt.Sprintf("step %d could not be recorded: %v", step.StepNumber, err)), true, nil
 	}
+
+	obs.AgentSteps.WithLabelValues(step.ActionType, step.Status).Inc()
 
 	s.stepCount++
 	rec.ref = ref

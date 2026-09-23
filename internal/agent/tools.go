@@ -11,8 +11,13 @@ import (
 
 	"github.com/wpan36/incident_diag/internal/llm"
 	"github.com/wpan36/incident_diag/internal/mcpclient"
+	"github.com/wpan36/incident_diag/internal/obs"
 	"github.com/wpan36/incident_diag/internal/store"
 )
+
+// metricUnknownTool stands in for a tool name the model invented, so that
+// agent_tool_calls_total keeps a closed label set.
+const metricUnknownTool = "__unknown__"
 
 // Deps is everything the loop needs.
 //
@@ -102,6 +107,10 @@ func (a *Agent) callTool(ctx context.Context, name string, args json.RawMessage)
 		// run unbounded.
 		note := fmt.Sprintf("There is no tool called %q. The tools you may call are: %s.",
 			name, strings.Join(a.names, ", "))
+		// metricUnknownTool, not name: the model invents these, so the label
+		// would be unbounded and one bad run could double the cardinality of
+		// this metric for the life of the process.
+		obs.AgentToolCalls.WithLabelValues(metricUnknownTool, store.ToolCallRefused).Inc()
 		return Observation{
 			Text:  note,
 			Error: note,
@@ -115,8 +124,11 @@ func (a *Agent) callTool(ctx context.Context, name string, args json.RawMessage)
 	start := time.Now()
 	res, err := a.deps.Tools.Call(ctx, name, args)
 	elapsed := time.Since(start)
+	// The name is known to be one of ops-mcp's, so the label is a closed set.
+	obs.AgentToolDuration.WithLabelValues(name).Observe(elapsed.Seconds())
 
 	if err != nil {
+		obs.AgentToolCalls.WithLabelValues(name, store.ToolCallError).Inc()
 		// The caller checks ctx.Err() before using this: a cancelled run stops
 		// rather than recording a tool failure for a run that is over.
 		text := fmt.Sprintf("%s could not be called: %v", name, err)
@@ -134,6 +146,7 @@ func (a *Agent) callTool(ctx context.Context, name string, args json.RawMessage)
 		Name: name, Arguments: args,
 		Status: statusOf(res), Result: res.Text, Duration: elapsed,
 	}
+	obs.AgentToolCalls.WithLabelValues(name, call.Status).Inc()
 	if call.Status != store.ToolCallOK {
 		// The note is the server's one-line reason; the text is what the model
 		// reads. Recording both means the audit row says why without anyone

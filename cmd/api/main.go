@@ -22,6 +22,7 @@ import (
 	"github.com/wpan36/incident_diag/internal/files"
 	"github.com/wpan36/incident_diag/internal/log"
 	"github.com/wpan36/incident_diag/internal/mq"
+	"github.com/wpan36/incident_diag/internal/obs"
 	"github.com/wpan36/incident_diag/internal/search"
 	"github.com/wpan36/incident_diag/internal/shutdown"
 	"github.com/wpan36/incident_diag/internal/store"
@@ -31,6 +32,9 @@ import (
 // database that accepts TCP but never answers would leave the process hanging
 // with no output.
 const connectTimeout = 10 * time.Second
+
+// serviceName identifies this binary in traces and metrics.
+const serviceName = "api"
 
 func main() {
 	if err := run(); err != nil {
@@ -48,6 +52,7 @@ func run() error {
 	docCfg, docErr := config.LoadDocuments()
 	kafkaCfg, kafkaErr := config.LoadKafka()
 	embedCfg, embedErr := config.LoadEmbedding()
+	traceCfg, traceErr := config.LoadTracing(serviceName)
 	searchCfg, searchErr := config.LoadSearch()
 	// The API runs no agent. It needs these two because
 	// POST /api/incidents/{id}/runs records the budget and the model on the
@@ -58,7 +63,7 @@ func run() error {
 	// GET /api/runs/{id}/events.
 	eventsCfg, eventsErr := config.LoadEvents()
 	if err := errors.Join(cfgErr, dbErr, httpErr, docErr, kafkaErr, embedErr, searchErr,
-		agentErr, llmErr, eventsErr); err != nil {
+		agentErr, llmErr, eventsErr, traceErr); err != nil {
 		return err
 	}
 
@@ -66,7 +71,8 @@ func run() error {
 	logger.Info("starting api", "config", cfg.String(), "database", dbCfg.String(),
 		"http", httpCfg.String(), "documents", docCfg.String(), "kafka", kafkaCfg.String(),
 		"embedding", embedCfg.String(), "search", searchCfg.String(),
-		"agent", agentCfg.String(), "llm", llmCfg.String(), "events", eventsCfg.String())
+		"agent", agentCfg.String(), "llm", llmCfg.String(), "events", eventsCfg.String(),
+		"tracing", traceCfg.String())
 
 	// Signals become a cancelled context before anything is opened, so a
 	// Ctrl-C during startup is honoured rather than queued.
@@ -74,6 +80,14 @@ func run() error {
 	defer stop()
 
 	var closers shutdown.Group
+
+	// Before anything that might emit a span. Registered first so it shuts down
+	// last, giving spans from the closers above it somewhere to go.
+	flushTraces, err := obs.Setup(ctx, obs.Config{Endpoint: traceCfg.Endpoint, Service: traceCfg.Service}, logger)
+	if err != nil {
+		return err
+	}
+	closers.Add("tracing", flushTraces)
 
 	connectCtx, cancel := context.WithTimeout(ctx, connectTimeout)
 	defer cancel()
@@ -140,6 +154,7 @@ func run() error {
 			Events:      eventsCfg,
 			LLMModel:    llmCfg.Model,
 			Logger:      logger,
+			Service:     serviceName,
 		}).Router(),
 		ReadHeaderTimeout: httpCfg.ReadHeaderTimeout,
 		ReadTimeout:       httpCfg.ReadTimeout,

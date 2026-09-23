@@ -13,11 +13,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/wpan36/incident_diag/internal/obs"
 )
+
+// tracer is resolved through the global provider on every span, so holding it
+// here does not depend on obs.Setup having run first.
+var tracer = obs.Tracer("mcpclient")
 
 // Status values, matching tool_calls.status.
 const (
@@ -75,7 +84,12 @@ type Client struct {
 func Connect(ctx context.Context, endpoint string, timeout time.Duration, logger *slog.Logger) (*Client, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "incident-diag", Version: "0.1.0"}, nil)
 
-	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: endpoint,
+		// So that a tool call carries the agent's trace context to ops-mcp,
+		// where otelgin continues the same trace.
+		HTTPClient: &http.Client{Transport: obs.Transport(nil)},
+	}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcpclient: connect to %s: %w", endpoint, err)
 	}
@@ -117,6 +131,10 @@ func (c *Client) Tools() []Tool { return c.tools }
 // TIMEOUT result, not an error, since otherwise the most likely timeout there
 // is — ops-mcp hanging — is the one that could never be recorded as one.
 func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (Result, error) {
+	ctx, span := tracer.Start(ctx, "mcp.call "+name,
+		trace.WithAttributes(obs.AttrToolName.String(name)))
+	defer span.End()
+
 	var decoded any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &decoded); err != nil {
@@ -133,12 +151,22 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (R
 		// a tool result for a run that is over.
 		if ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 			note := fmt.Sprintf("%s did not answer within %s", name, c.timeout)
+			span.SetAttributes(attribute.String("incident_diag.tool_status", StatusTimeout))
 			c.logger.Warn("tool call timed out", "tool", name, "timeout", c.timeout)
 			return Result{Text: note, Status: StatusTimeout, Note: note, OriginalBytes: len(note)}, nil
 		}
 		return Result{}, fmt.Errorf("mcpclient: call %s: %w", name, err)
 	}
-	return c.result(name, res), nil
+
+	out := c.result(name, res)
+	span.SetAttributes(attribute.String("incident_diag.tool_status", out.Status))
+	if out.Status != StatusOK {
+		// Not an error status on the span: a refused or truncated result is a
+		// normal outcome the agent is expected to handle, and marking it as an
+		// error would make every trace look broken.
+		span.AddEvent("tool did not return OK")
+	}
+	return out, nil
 }
 
 // Close ends the session.

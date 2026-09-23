@@ -54,6 +54,11 @@ MySQL, Kafka or Elasticsearch, and the import graph is where that is enforced.
   rejected query would have it rewrite a good query until its budget ran out.
 - **Limits are refused, never clamped.** Silently widening a step changes the numbers the
   agent reasons about without telling it; a refusal naming the limit costs one tool call.
+- **An over-cap refusal names the metrics it matched.** A refusal that only states the rule
+  is useless to an agent querying `{job="x"}` *because* it does not know the names — M32
+  spent 35 of 240 tool calls in that loop. `overCapNote` answers with the distinct
+  `__name__` values, which are already in the response, the way `unknownName` answers a
+  wrong service with the valid ones.
 - **The 8 KiB cap is applied once, in `ok`,** marker included — the cap is the size of what
   leaves the server, not of the part before the note saying it was cut. No tool applies it
   itself, so none can forget it and no two can disagree about where it falls.

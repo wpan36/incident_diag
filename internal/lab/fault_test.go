@@ -144,7 +144,7 @@ func TestFaultValidation(t *testing.T) {
 		{"status above 599", func() error { return c.SetError(ErrorFault{Enabled: true, Status: 600, Ratio: 1}) }},
 		{"ratio above one", func() error { return c.SetError(ErrorFault{Enabled: true, Status: 500, Ratio: 1.5}) }},
 		{"no workers", func() error { return c.SetCPU(CPUFault{Enabled: true, Workers: 0}) }},
-		{"too many workers", func() error { return c.SetCPU(CPUFault{Enabled: true, Workers: maxCPUWorkers + 1}) }},
+		{"too many workers", func() error { return c.SetCPU(CPUFault{Enabled: true, Workers: MaxCPUWorkers + 1}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.set(); err == nil {

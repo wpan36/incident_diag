@@ -39,6 +39,22 @@ a coincidence the agent could learn from.
 
 ## Gotchas
 
+**payment-service is much harder to starve than checkout-service, and the scenarios say
+so.** `checkout-cpu` uses `DefaultParams().Workers` (2) and `payment-cpu` uses
+`lab.MaxCPUWorkers` (32). checkout's handler serializes orders, which is real CPU work, so
+two spinners slow it. payment's `/charge` spends most of its time asleep inside the
+simulated processor call, and the container is limited to one CPU from which Go derives
+`GOMAXPROCS=2` — so two spinners leave it answering in 87 ms and there is no incident at
+all. At 32 it reaches a p99 of about 900 ms against its 800 ms budget, which is
+diagnosable but thin. An evaluation run measured the 87 ms version and reported, correctly,
+that nothing was wrong.
+
+**`scenario.Driver` is the second way to drive the lab.** `scenario.Run` has fixed
+baseline, fault and recovery phases and ends in a metrics report; `Driver` starts a fault,
+holds it with traffic flowing for as long as the caller needs, and stops. `internal/e2e`
+uses the second, because an investigation lasts however long the model takes.
+
+
 - **The metric names are a contract with the corpus**, not a naming choice.
   `TestRegisteredMetricNames` fails on a rename in either direction, because a runbook step
   that queries a metric nobody exports is worse than no runbook.

@@ -100,15 +100,74 @@ func (s *Server) prometheusQuery(ctx context.Context, _ *mcp.CallToolRequest, in
 		return res, meta, nil
 	}
 	if n := len(result.series); n > s.cfg.MaxSeries {
-		res, meta := refused(
-			"the query matched %d series; this server returns at most %d, so narrow it with a label matcher or an aggregation",
-			n, s.cfg.MaxSeries)
+		res, meta := refused("%s", overCapNote(n, s.cfg.MaxSeries, result.series))
 		return res, meta, nil
 	}
 
 	text, series, points := renderPrometheus(result)
 	res, meta := ok(text, Meta{Series: series, Points: points})
 	return res, meta, nil
+}
+
+// maxNamedMetrics bounds the metric list an over-cap refusal carries. It is
+// well above what one service exports and far below what the 8 KiB result cap
+// would allow, so the list is either complete or obviously not.
+const maxNamedMetrics = 80
+
+// overCapNote explains a refusal by answering the question the query was
+// asking.
+//
+// The old message said "narrow it with a label matcher or an aggregation",
+// which the agent could not act on: it was querying `{job="payment-service"}`
+// or `count by (__name__) (...)` precisely *because* it did not know the metric
+// names, and those already are aggregations. In one evaluation, 35 of 240 tool
+// calls were spent guessing at this, and the run that needed
+// process_cpu_seconds_total ran out of budget before finding it.
+//
+// This is the same move unknownName already makes for a wrong service name:
+// answer with the valid set instead of with a rule. The names are in the
+// response that has already arrived, so it costs no second request.
+func overCapNote(matched, cap int, series []promSeries) string {
+	names := metricNames(series)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "the query matched %d series; this server returns at most %d. ",
+		matched, cap)
+	if len(names) == 0 {
+		b.WriteString("Narrow it with a label matcher or an aggregation.")
+		return b.String()
+	}
+
+	shown := names
+	if len(shown) > maxNamedMetrics {
+		shown = shown[:maxNamedMetrics]
+	}
+	fmt.Fprintf(&b, "It matched %d metrics: %s", len(names), strings.Join(shown, ", "))
+	if len(shown) < len(names) {
+		fmt.Fprintf(&b, ", and %d more", len(names)-len(shown))
+	}
+	b.WriteString(". Query one of them by name, or aggregate over fewer series.")
+	return b.String()
+}
+
+// metricNames returns the distinct __name__ values, sorted.
+//
+// A series with no __name__ contributes nothing: that is what an aggregation
+// that dropped the label produces, and an empty entry in the list would read
+// as a metric called "".
+func metricNames(series []promSeries) []string {
+	seen := make(map[string]bool, len(series))
+	for _, s := range series {
+		if name := s.Metric["__name__"]; name != "" {
+			seen[name] = true
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // resolveStep validates an explicit step or derives one from the span.

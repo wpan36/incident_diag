@@ -5,9 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/wpan36/incident_diag/internal/embed"
+	"github.com/wpan36/incident_diag/internal/obs"
 )
+
+// tracer is resolved through the global provider on every span, so holding it
+// here does not depend on obs.Setup having run first.
+var tracer = obs.Tracer("search")
 
 // Retrieval limits.
 const (
@@ -68,6 +77,13 @@ func (c *Client) Search(ctx context.Context, vector []float32, q Query) ([]Resul
 		return nil, fmt.Errorf("search: query vector has %d dimensions, want %d",
 			len(vector), embed.Dimensions)
 	}
+
+	ctx, span := tracer.Start(ctx, "search.knn",
+		trace.WithAttributes(attribute.Int("incident_diag.k", clampK(q.K))))
+	defer span.End()
+
+	started := time.Now()
+	defer func() { obs.RetrievalDuration.Observe(time.Since(started).Seconds()) }()
 
 	body, err := searchBody(vector, q, clampK(q.K))
 	if err != nil {

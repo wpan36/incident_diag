@@ -267,7 +267,8 @@ func TestProseIsRecordedAsNoneAndRetriedOnce(t *testing.T) {
 	// The retry is an ordinary next iteration: the instruction is a user
 	// message the builder renders, not a second code path.
 	retry := h.llm.Requests()[1].Messages
-	last := retry[len(retry)-1].Content
+	// -2, not -1: the budget line is always the last message.
+	last := retry[len(retry)-2].Content
 	assertContains(t, last, "exactly one of the tools", "the retry's last message")
 	// The instruction carries why the step was unusable and which step number
 	// it spent, so the retry can correct the actual mistake.
@@ -308,13 +309,14 @@ func TestSeveralToolCallsInOneResponseExecuteOnlyTheFirst(t *testing.T) {
 	}
 
 	// The replayed history carries one call and one reply.
+	// The budget line is last, so the call and its reply are the two before it.
 	replayed := h.llm.Requests()[1].Messages
-	assistant := replayed[len(replayed)-2]
+	assistant := replayed[len(replayed)-3]
 	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "c1" {
 		t.Errorf("assistant message = %+v", assistant)
 	}
-	if replayed[len(replayed)-1].ToolCallID != "c1" {
-		t.Errorf("tool reply = %+v", replayed[len(replayed)-1])
+	if replayed[len(replayed)-2].ToolCallID != "c1" {
+		t.Errorf("tool reply = %+v", replayed[len(replayed)-2])
 	}
 }
 

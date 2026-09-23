@@ -50,11 +50,28 @@ type Turn struct {
 // be a strategy, and a test suite, for a situation that cannot arise.
 type ContextBuilder struct {
 	Incident Incident
+
+	// Budget is rendered into every prompt. The loop enforces it either way;
+	// this is so the model can see it coming and stop on its own, which before
+	// budgetMessage existed it never did.
+	Budget Budget
+}
+
+// Spent is how much of the budget has gone, as of the step about to be taken.
+type Spent struct {
+	// Step is the step number this call will produce, not the last completed
+	// one, because the question the model has to answer is whether to spend
+	// this one.
+	Step      int
+	ToolCalls int
 }
 
 // Build renders the message sequence for the next call.
-func (b ContextBuilder) Build(turns []Turn) []llm.Message {
-	msgs := make([]llm.Message, 0, 2+2*len(turns))
+//
+// The budget line goes last, after the observations, so it is the most recent
+// thing the model reads before it chooses.
+func (b ContextBuilder) Build(turns []Turn, spent Spent) []llm.Message {
+	msgs := make([]llm.Message, 0, 3+2*len(turns))
 	msgs = append(msgs,
 		llm.Message{Role: llm.RoleSystem, Content: SystemPrompt},
 		llm.Message{Role: llm.RoleUser, Content: incidentMessage(b.Incident)},
@@ -76,6 +93,12 @@ func (b ContextBuilder) Build(turns []Turn) []llm.Message {
 				Content: observationMessage(t.Number, observation)},
 		)
 	}
+
+	msgs = append(msgs, llm.Message{
+		Role: llm.RoleUser,
+		Content: budgetMessage(spent.Step, b.Budget.MaxSteps,
+			spent.ToolCalls, b.Budget.MaxToolCalls),
+	})
 	return msgs
 }
 
